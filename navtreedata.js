@@ -1,6 +1,8 @@
 var NAVTREE =
 [
   [ "Distributed Publish Subscribe for IoT", "index.html", [
+    [ "Introduction to Distributed Publish Subscribe for IoT", "md__home_tmalsbar_src_github.com_malsbat_dps-for-iot_README.html", null ],
+    [ "Message Protocol", "md__home_tmalsbar_src_github.com_malsbat_dps-for-iot_doc_Message-Protocol.html", null ],
     [ "Data Structures", "annotated.html", [
       [ "Data Structures", "annotated.html", "annotated_dup" ],
       [ "Data Structure Index", "classes.html", null ],
@@ -27,7 +29,7 @@ var NAVTREE =
 var NAVTREEINDEX =
 [
 "annotated.html",
-"private_2dps_8h.html#acfd0a94ac82f0b73e4db28cc86d016d5"
+"private_2dps_8h.html#acccd1c96419aec3c79fa95e47b096340"
 ];
 
 var SYNCONMSG = 'click to disable panel synchronisation';
