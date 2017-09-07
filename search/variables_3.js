@@ -1,5 +1,4 @@
 var searchData=
 [
-  ['dps_5fdebug',['DPS_Debug',['../dbg_8h.html#a6f4bedbcc8b3bd12cea20b5ce3a8abba',1,'dbg.h']]],
-  ['dps_5fregistrytopicstring',['DPS_RegistryTopicString',['../registration_8h.html#a7c1111f95ed473c1b27fa3c9ee096796',1,'registration.h']]]
+  ['host',['host',['../struct___d_p_s___registration.html#ae78f74ba04a5f9cf7a48d4aa39a3e774',1,'_DPS_Registration']]]
 ];

@@ -1,6 +1,0 @@
-/home/tmalsbar/src/github.com/malsbat/dps-for-iot/inc/dps/private/cbor.h:264: warning: argument 'numkeys' of command @param is not found in the argument list of DPS_ParseMapInit(CBOR_MapState *mapState, DPS_RxBuffer *buffer, const int32_t *keys, size_t numKeys)
-/home/tmalsbar/src/github.com/malsbat/dps-for-iot/inc/dps/private/cbor.h:274: warning: The following parameters of DPS_ParseMapInit(CBOR_MapState *mapState, DPS_RxBuffer *buffer, const int32_t *keys, size_t numKeys) are not documented:
-  parameter 'numKeys'
-/home/tmalsbar/src/github.com/malsbat/dps-for-iot/inc/dps/private/dps.h:120: warning: argument 'storage' of command @param is not found in the argument list of DPS_TxBufferAppend(DPS_TxBuffer *buffer, const uint8_t *data, size_t len)
-/home/tmalsbar/src/github.com/malsbat/dps-for-iot/inc/dps/private/dps.h:129: warning: The following parameters of DPS_TxBufferAppend(DPS_TxBuffer *buffer, const uint8_t *data, size_t len) are not documented:
-  parameter 'data'

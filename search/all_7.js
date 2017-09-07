@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['host',['host',['../struct___d_p_s___registration.html#ae78f74ba04a5f9cf7a48d4aa39a3e774',1,'_DPS_Registration']]]
+  ['introduction_20to_20distributed_20publish_20subscribe_20for_20iot',['Introduction to Distributed Publish Subscribe for IoT',['../md__home_tmalsbar_src_github.com_malsbat_dps-for-iot_README.html',1,'']]]
 ];

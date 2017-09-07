@@ -1,4 +1,4 @@
 var searchData=
 [
-  ['host',['host',['../struct___d_p_s___registration.html#ae78f74ba04a5f9cf7a48d4aa39a3e774',1,'_DPS_Registration']]]
+  ['port',['port',['../struct___d_p_s___registration.html#ab9ca063a4985209066220ac048085a57',1,'_DPS_Registration']]]
 ];
