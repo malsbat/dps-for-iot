@@ -1,13 +1,28 @@
+matrix:
+  include:
+    -os: linux
+     addons:
+       apt:
+         sources:
+	 - ubuntu-toolchain-r-test
+	 packages:
+	 - g++-7
+     env:
+       - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
+
+before_install:
+  - eval "${MATRIX_EVAL}"
+
 # Dependency Management
 # install: make get-deps
 
 # Default Build Script
 language: c
-script: scons
+script: scons CC=$CC CXX=$CXX
 
 # Choosing compilers to test against
 compiler:
-  - clang
+#  - clang
   - gcc
 
 # Build Matrix - env and compiler can be given as arrays to construct a build matrix.
