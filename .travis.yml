@@ -1,0 +1,13 @@
+# Dependency Management
+# install: make get-deps
+
+# Default Build Script
+language: c
+script: scons
+
+# Choosing compilers to test against
+compiler:
+  - clang
+  - gcc
+
+# Build Matrix - env and compiler can be given as arrays to construct a build matrix.
