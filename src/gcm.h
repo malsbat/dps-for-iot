@@ -1,7 +1,12 @@
+/**
+ * @file
+ * AES-CCM encryption and decryption
+ */
+
 /*
  *******************************************************************
  *
- * Copyright 2016 Intel Corporation All rights reserved.
+ * Copyright 2017 Intel Corporation All rights reserved.
  *
  *-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
  *
@@ -20,47 +25,44 @@
  *-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
  */
 
-#ifndef _CCM_H
-#define _CCM_H
+#ifndef _GCM_H
+#define _GCM_H
 
 #include <stdint.h>
 #include <dps/dbg.h>
 #include <dps/err.h>
 #include <dps/private/dps.h>
+#include "crypto.h"
 
-#define AES_128_KEY_LENGTH   16
-
-/*
- * This is the recommended nonce size for COSE and the only
- * size that is supported in the DPS implementation. This
- * in turn implies a two byte length field for the encrypted
- * payload.
- */
-#define DPS_CCM_NONCE_SIZE   13
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
- * Implements AES-CCM (Counter with CBC-MAC) encryption as described in RFC 3610. The message in
+ * This is the recommended nonce size for COSE and the only
+ * size that is supported in the DPS implementation.
+ */
+#define AES_GCM_NONCE_LEN   12
+
+/**
+ * Implements AES-GCM (Galois/Counter Mode) encryption. The message is
  * encrypted in place.
  *
- * @param key        The AES-128 encryption key
- * @param M          Length of the authentication tag in bytes (even numbers 4..16)
- * @param L          Bytes for encoding the length (must be 2 in this implementation)
- * @param nonce      The nonce (must be 13 bytes in this implementation)
+ * @param key        The AES-256 encryption key
+ * @param nonce      The nonce (must be 12 bytes in this implementation)
  * @param plainText  Plaintext to be encrypted,
  * @param ptLen      The length of the plaintext
  * @param aad        The auxiliary data that will be authenticated but not encrypted
  * @param aadLen     The length of the auxiliary data
  * @param cipherText Returns the cipher text. The buffer must have room to append
- *                   (ptLen + M) bytes.
+ *                   (ptLen + 16) bytes.
  *
  * @return
- *         - DPS_OK if the CCM context is initialized
- *         - DPS_ERR_RESOURCES if the resources required are not available.
+ * - DPS_OK if the GCM context is initialized
+ * - DPS_ERR_RESOURCES if the resources required are not available.
  */
-DPS_Status Encrypt_CCM(const uint8_t key[AES_128_KEY_LENGTH],
-                       uint8_t M,
-                       uint8_t L,
-                       const uint8_t nonce[DPS_CCM_NONCE_SIZE],
+DPS_Status Encrypt_GCM(const uint8_t key[AES_256_KEY_LEN],
+                       const uint8_t nonce[AES_GCM_NONCE_LEN],
                        const uint8_t* plainText,
                        size_t ptLen,
                        const uint8_t* aad,
@@ -68,34 +70,33 @@ DPS_Status Encrypt_CCM(const uint8_t key[AES_128_KEY_LENGTH],
                        DPS_TxBuffer* cipherText);
 
 /**
- * Implements AES-CCM (Counter with CBC-MAC) decryption as described in RFC 3610. The message in
+ * Implements AES-GCM (Galois/Counter Mode) decryption. The message is
  * decrypted in place.
  *
- * @param key        The AES-128 encryption key
- * @param M          Length of the authentication tag in bytes (even numbers 4..16)
- * @param L          Bytes for encoding the length (must be 2 in this implementation)
- * @param nonce      The nonce (must be 13 bytes in this implementation)
+ * @param key        The AES-256 encryption key
+ * @param nonce      The nonce (must be 12 bytes in this implementation)
  * @param cipherText The cipher text to be decrypted
  * @param ctLen      The length of the cipher text
  * @param aad        The auxiliary data that will be authenticated but not encrypted
  * @param aadLen     The length of the auxiliary data
  * @param plainText  Returns the decrypted plain text. The buffer must have room
- *                   to append (ctLen - M) bytes.
+ *                   to append (ctLen - 16) bytes.
  *
  * @return
- *         - DPS_OK if the CCM context is initialized
- *         - DPS_ERR_RESOURCES if the resources required are not available.
- *         - DPS_ERR_SECURITY if the decryption failed
+ * - DPS_OK if the GCM context is initialized
+ * - DPS_ERR_RESOURCES if the resources required are not available.
+ * - DPS_ERR_SECURITY if the decryption failed
  */
-DPS_Status Decrypt_CCM(const uint8_t key[AES_128_KEY_LENGTH],
-                       uint8_t M,
-                       uint8_t L,
-                       const uint8_t nonce[DPS_CCM_NONCE_SIZE],
+DPS_Status Decrypt_GCM(const uint8_t key[AES_256_KEY_LEN],
+                       const uint8_t nonce[AES_GCM_NONCE_LEN],
                        const uint8_t* cipherText,
                        size_t ctLen,
                        const uint8_t* aad,
                        size_t aadLen,
                        DPS_TxBuffer* plainText);
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif

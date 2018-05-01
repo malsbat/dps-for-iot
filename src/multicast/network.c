@@ -23,20 +23,21 @@
 #include <assert.h>
 #include <string.h>
 #include <malloc.h>
-#include <uv.h>
+#include <safe_lib.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
 #include <dps/private/network.h>
-#include "coap.h"
+#include "../coap.h"
 
 /*
  * Debug control for this module
  */
 DPS_DEBUG_CONTROL(DPS_DEBUG_ON);
 
-
 #define USE_IPV4       0x10
 #define USE_IPV6       0x01
+
+#define MAX_INTERFACE_NAME_LEN   64
 
 struct _DPS_MulticastReceiver {
     uint8_t ipVersions;
@@ -48,11 +49,8 @@ struct _DPS_MulticastReceiver {
 
 typedef struct {
     uv_udp_t udp;
-    uv_udp_send_t req;
     int family;
 } TxSocket;
-
-#define MAX_BUFS  3
 
 struct _DPS_MulticastSender {
     uint8_t ipVersions;
@@ -79,17 +77,28 @@ static void AllocBuffer(uv_handle_t* handle, size_t suggestedSize, uv_buf_t* buf
     buf->base = malloc(buf->len);
 }
 
-static void OnMcastRx(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct sockaddr* addr, unsigned flags)
+static void OnMcastRx(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct sockaddr* addr,
+                      unsigned flags)
 {
     DPS_MulticastReceiver* receiver = (DPS_MulticastReceiver*)handle->data;
     DPS_NetEndpoint ep;
 
-    DPS_DBGPRINT("OnMcastRx\n");
+    if (nread == 0 && !addr) {
+        /* No more data to read, free the buffer */
+        goto Exit;
+    }
+
+    DPS_DBGTRACEA("handle=%p,nread=%d,buf={base=%p,len=%d},addr=%p,flags=0x%x\n", handle, nread,
+                  buf->base, buf->len, addr, flags);
+
     if (nread < 0) {
         DPS_ERRPRINT("Read error %s\n", uv_err_name((int)nread));
         uv_close((uv_handle_t*)handle, NULL);
-        free(buf->base);
-        return;
+        goto Exit;
+    }
+    if (flags & UV_UDP_PARTIAL) {
+        DPS_ERRPRINT("Dropping partial message, read buffer too small\n");
+        goto Exit;
     }
     if (addr) {
         DPS_DBGPRINT("Received buffer of size %zd from %s\n", nread, DPS_NetAddrText(addr));
@@ -97,6 +106,7 @@ static void OnMcastRx(uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, cons
     ep.cn = NULL;
     DPS_SetAddress(&ep.addr, addr);
     receiver->cb(receiver->node, &ep, DPS_OK, (uint8_t*)buf->base, nread);
+Exit:
     free(buf->base);
 }
 
@@ -143,7 +153,7 @@ static DPS_Status MulticastRxInit(DPS_MulticastReceiver* receiver)
     uv_interface_addresses(&ifsAddrs, &numIfs);
     for (i = 0; i < numIfs; ++i) {
         uv_interface_address_t* ifn = &ifsAddrs[i];
-        char addr[INET6_ADDRSTRLEN + 1];
+        char name[INET6_ADDRSTRLEN + 1];
         /*
          * Filter out interfaces we are not interested in
          */
@@ -151,18 +161,21 @@ static DPS_Status MulticastRxInit(DPS_MulticastReceiver* receiver)
             continue;
         }
         if (ifn->address.address4.sin_family == AF_INET6) {
-            ret = uv_ip6_name((struct sockaddr_in6*)&ifn->address, addr, sizeof(addr));
+            char ifaddr[INET6_ADDRSTRLEN + MAX_INTERFACE_NAME_LEN + 2];
+            ret = uv_ip6_name((struct sockaddr_in6*)&ifn->address, name, sizeof(name));
             assert(ret == 0);
-            DPS_DBGPRINT("Joining IPv6 interface %s [%s]\n", ifn->name, addr);
-            ret = uv_udp_set_membership(&receiver->udp6Rx, COAP_MCAST_ALL_NODES_LINK_LOCAL_6, addr, UV_JOIN_GROUP);
+            name[sizeof(name) - 1] = 0;
+            snprintf(ifaddr, sizeof(ifaddr), "%s%%%s", name, ifn->name);
+            DPS_DBGPRINT("Joining IPv6 interface %s [%s]\n", ifn->name, ifaddr);
+            ret = uv_udp_set_membership(&receiver->udp6Rx, COAP_MCAST_ALL_NODES_LINK_LOCAL_6, ifaddr, UV_JOIN_GROUP);
         } else {
-            ret = uv_ip4_name((struct sockaddr_in*)&ifn->address, addr, sizeof(addr));
+            ret = uv_ip4_name((struct sockaddr_in*)&ifn->address, name, sizeof(name));
             assert(ret == 0);
-            DPS_DBGPRINT("Joining IPv4 interface %s [%s]\n", ifn->name, addr);
-            ret = uv_udp_set_membership(&receiver->udp4Rx, COAP_MCAST_ALL_NODES_LINK_LOCAL_4, addr, UV_JOIN_GROUP);
+            DPS_DBGPRINT("Joining IPv4 interface %s [%s]\n", ifn->name, name);
+            ret = uv_udp_set_membership(&receiver->udp4Rx, COAP_MCAST_ALL_NODES_LINK_LOCAL_4, name, UV_JOIN_GROUP);
         }
         if (ret) {
-            DPS_ERRPRINT("Join group failed %s: %s\n", ifn->name, uv_err_name(ret));
+            DPS_WARNPRINT("Join group failed %s: %s\n", ifn->name, uv_err_name(ret));
         }
     }
     uv_free_interface_addresses(ifsAddrs, numIfs);
@@ -231,8 +244,6 @@ void DPS_MulticastStopReceive(DPS_MulticastReceiver* receiver)
 /*****************************************************
  * Send path
  ****************************************************/
-
-#define MAX_INTERFACE_NAME_LEN   64
 
 static DPS_Status MulticastTxInit(DPS_MulticastSender* sender)
 {
@@ -343,39 +354,107 @@ DPS_MulticastSender* DPS_MulticastStartSend(DPS_Node* node)
     return sender;
 }
 
+static void FreeSender(DPS_MulticastSender* sender)
+{
+    free(sender->udpTx);
+    free(sender);
+}
+
 static void TxCloseCB(uv_handle_t* handle)
 {
     DPS_MulticastSender* sender = (DPS_MulticastSender*)handle->data;
     if (--sender->numTx == 0) {
-        free(sender->udpTx);
-        free(sender);
+        FreeSender(sender);
     }
 }
 
 void DPS_MulticastStopSend(DPS_MulticastSender* sender)
 {
     size_t i;
-    for (i = 0; i < sender->numTx; ++i) {
-        uv_close((uv_handle_t*)&sender->udpTx[i].udp, TxCloseCB);
+    if (sender->numTx) {
+        for (i = 0; i < sender->numTx; ++i) {
+            uv_close((uv_handle_t*)&sender->udpTx[i].udp, TxCloseCB);
+        }
+    } else {
+        FreeSender(sender);
     }
 }
+
+#define MAX_BUFS 4
+
+typedef struct {
+    DPS_MulticastSender* sender;
+    void* appCtx;
+    DPS_MulticastSendComplete onSendComplete;
+    DPS_Status ret;
+    size_t numTx;
+    size_t numBufs;
+    uv_buf_t bufs[1];
+} MulticastSend;
 
 static void MulticastSendComplete(uv_udp_send_t* req, int status)
 {
+    MulticastSend* send = (MulticastSend*)req->data;
+
     if (status) {
-        DPS_ERRPRINT("uv_udp_send failed: %s\n", uv_err_name(status));
+        if (status == -ECANCELED) {
+            /*
+             * This will occur normally when we are closing the handle
+             */
+            DPS_WARNPRINT("MulticastSendComplete status=%s\n", uv_err_name(status));
+        } else {
+            DPS_ERRPRINT("MulticastSendComplete status=%s\n", uv_err_name(status));
+        }
+        send->ret = DPS_ERR_NETWORK;
     }
+    if (--send->numTx == 0) {
+        if (send->onSendComplete) {
+            send->onSendComplete(send->sender, send->appCtx, send->bufs, send->numBufs, send->ret);
+        }
+        free(send);
+    }
+    free(req);
 }
 
-DPS_Status DPS_MulticastSend(DPS_MulticastSender* sender, uv_buf_t* bufs, size_t numBufs)
+DPS_Status DPS_MulticastSend(DPS_MulticastSender* sender, void* appCtx, uv_buf_t* bufs, size_t numBufs, DPS_MulticastSendComplete sendCompleteCB)
 {
+    MulticastSend* send = NULL;
     size_t i;
+
+#ifndef NDEBUG
+    size_t len = 0;
+    size_t j;
+    for (j = 0; j < numBufs; ++j) {
+        len += bufs[j].len;
+    }
+#endif
+
+    /*
+     * No usable multicast interfaces so return immediately
+     */
+    if (sender->numTx == 0) {
+        return DPS_ERR_NO_ROUTE;
+    }
+
+    send = malloc(sizeof(MulticastSend) + (numBufs - 1) * sizeof(uv_buf_t));
+    if (!send) {
+        return DPS_ERR_RESOURCES;
+    }
+    send->sender = sender;
+    send->appCtx = appCtx;
+    send->onSendComplete = sendCompleteCB;
+    send->ret = DPS_OK;
+    send->numTx = 0;
+    memcpy_s(send->bufs, numBufs * sizeof(uv_buf_t), bufs, numBufs * sizeof(uv_buf_t));
+    send->numBufs = numBufs;
+
     /*
      * Send on each interface
      */
     for (i = 0; i < sender->numTx; ++i) {
         int ret;
         struct sockaddr_storage addr;
+        uv_udp_send_t* sendReq;
         if (sender->udpTx[i].family == AF_INET6) {
             ret = uv_ip6_addr(COAP_MCAST_ALL_NODES_LINK_LOCAL_6, COAP_UDP_PORT, (struct sockaddr_in6*)&addr);
         } else {
@@ -384,22 +463,30 @@ DPS_Status DPS_MulticastSend(DPS_MulticastSender* sender, uv_buf_t* bufs, size_t
         if (ret) {
             continue;
         }
-        /*
-         * Synchronous send
-         */
-        ret = uv_udp_send(&sender->udpTx[i].req, &sender->udpTx[i].udp, bufs, (unsigned int)numBufs, (struct sockaddr*)&addr, MulticastSendComplete);
+
+        sendReq = malloc(sizeof(*sendReq));
+        if (!sendReq) {
+            DPS_ERRPRINT("uv_udp_send_t malloc failed\n");
+            send->ret = DPS_ERR_RESOURCES;
+            continue;
+        }
+        sendReq->data = send;
+
+        ret = uv_udp_send(sendReq, &sender->udpTx[i].udp, send->bufs, (unsigned int)numBufs, (struct sockaddr*)&addr, MulticastSendComplete);
         if (ret) {
             DPS_ERRPRINT("uv_udp_send to %s failed: %s\n", DPS_NetAddrText((struct sockaddr*)&addr), uv_err_name(ret));
+            free(sendReq);
         } else {
-#ifndef NDEBUG
-            size_t len = 0;
-            int j;
-            for (j = 0; j < numBufs; ++j) {
-                len += bufs[j].len;
-            }
-            DPS_DBGPRINT("DPS_MulitcastSend total %zu bytes to %s\n", len, DPS_NetAddrText((struct sockaddr*)&addr));
-#endif
+            DPS_DBGPRINT("DPS_MulticastSend total %zu bytes to %s\n", len, DPS_NetAddrText((struct sockaddr*)&addr));
+            ++send->numTx;
         }
+    }
+    if (send->numTx == 0) {
+        /*
+         * Not a single send was successful
+         */
+        free(send);
+        return DPS_ERR_NETWORK;
     }
     return DPS_OK;
 }

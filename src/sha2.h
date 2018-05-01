@@ -1,3 +1,8 @@
+/**
+ * @file
+ * SHA-256 algorithm
+ */
+
 /*
  *******************************************************************
  *
@@ -27,7 +32,11 @@
 #include <dps/dbg.h>
 #include <dps/err.h>
 
-#define DPS_SHA2_DIGEST_LEN 32
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define DPS_SHA2_DIGEST_LEN 32 /**< Size of SHA-256 hash in bytes */
 
 /**
  * Compute the SHA2 hash of some data
@@ -37,5 +46,9 @@
  * @param len     The length of the data to hash
  */
 void DPS_Sha2(uint8_t digest[DPS_SHA2_DIGEST_LEN], const uint8_t* data, size_t len);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

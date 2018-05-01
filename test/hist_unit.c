@@ -26,19 +26,12 @@
  */
 #include <memory.h>
 #include <stdlib.h>
-#include <uv.h>
 #include <dps/dps.h>
 #include <dps/dbg.h>
 #include <dps/uuid.h>
 #include <dps/private/dps.h>
 #include "history.h"
-
-#ifdef _WIN32
-#define SLEEP(t) Sleep(t)
-#else
-extern void usleep(int);
-#define SLEEP(t) usleep((t) * 1000)
-#endif
+#include "test.h"
 
 extern void DPS_DumpHistory(DPS_History* history);
 
@@ -57,6 +50,7 @@ int main()
     DPS_NodeAddress* addrPtr;
 
     DPS_Debug = 1;
+    memset(&addr, 0, sizeof(addr));
     addr.inaddr.ss_family = AF_INET6;
 
     ret = DPS_InitUUID();

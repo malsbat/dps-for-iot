@@ -24,7 +24,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "test.h"
-#include <uv.h>
 #include <dps/private/network.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
@@ -49,7 +48,7 @@ static uint16_t NodeList[UINT16_MAX];
 
 static void OnPubMatch(DPS_Subscription* sub, const DPS_Publication* pub, uint8_t* data, size_t len)
 {
-    static uint8_t AckFmt[] = "This is an ACK from %d";
+    static const char AckFmt[] = "This is an ACK from %d";
     DPS_Status ret;
     const DPS_UUID* pubId = DPS_PublicationGetUUID(pub);
     uint32_t sn = DPS_PublicationGetSequenceNum(pub);
@@ -84,7 +83,7 @@ static void OnPubMatch(DPS_Subscription* sub, const DPS_Publication* pub, uint8_
 
         sprintf(ackMsg, AckFmt, DPS_GetPortNumber(DPS_PublicationGetNode(pub)));
 
-        ret = DPS_AckPublication(pub, ackMsg, sizeof(ackMsg));
+        ret = DPS_AckPublication(pub, (uint8_t*)ackMsg, sizeof(ackMsg));
         if (ret != DPS_OK) {
             DPS_PRINT("Failed to ack pub %s\n", DPS_ErrTxt(ret));
         }
@@ -465,6 +464,10 @@ int main(int argc, char** argv)
         LinksFailed = 0;
         for (l = links; l != NULL; l = l->next) {
             ret = LinkNodes(NodeMap[l->src], NodeMap[l->dst]);
+            if (ret != DPS_OK) {
+                DPS_ERRPRINT("Failed to link nodes: %s\n", DPS_ErrTxt(ret));
+                return EXIT_FAILURE;
+            }
             ++numLinks;
         }
         DPS_PRINT("%d nodes making %d links \n", numIds, numLinks);
@@ -505,11 +508,10 @@ int main(int argc, char** argv)
                 DPS_ERRPRINT("CreateSubscribe failed\n");
             }
             ret = DPS_Subscribe(sub, OnPubMatch);
-            if (ret == DPS_OK) {
-                break;
+            if (ret != DPS_OK) {
+                DPS_ERRPRINT("Subscribe failed %s\n", DPS_ErrTxt(ret));
+                return EXIT_FAILURE;
             }
-            DPS_ERRPRINT("Subscribe failed %s\n", DPS_ErrTxt(ret));
-            return EXIT_FAILURE;
         }
         /*
          * Check we got the result we expected

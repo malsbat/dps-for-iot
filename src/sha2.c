@@ -23,16 +23,10 @@
 #include <string.h>
 #include <memory.h>
 #include "sha2.h"
-#include <tinycrypt/sha256.h>
-
+#include "mbedtls/md.h"
 
 void DPS_Sha2(uint8_t digest[DPS_SHA2_DIGEST_LEN], const uint8_t* data, size_t len)
 {
-    struct tc_sha256_state_struct state;
-
-    tc_sha256_init(&state);
-    tc_sha256_update(&state, data, len);
-    tc_sha256_final(digest, &state);
+    const mbedtls_md_info_t* info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    mbedtls_md(info, data, len, digest);
 }
-
-

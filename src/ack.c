@@ -23,7 +23,6 @@
 #include <assert.h>
 #include <string.h>
 #include <malloc.h>
-#include <uv.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
 #include <dps/uuid.h>
@@ -45,28 +44,51 @@ DPS_DEBUG_CONTROL(DPS_DEBUG_ON);
 
 void DPS_DestroyAck(PublicationAck* ack)
 {
-    DPS_TxBufferFree(&ack->headers);
-    DPS_TxBufferFree(&ack->payload);
+    DPS_TxBufferFree(&ack->buf);
+    DPS_TxBufferFree(&ack->encryptedBuf);
     free(ack);
 }
 
-DPS_Status DPS_SendAcknowledgment(DPS_Node*node, PublicationAck* ack, RemoteNode* ackNode)
+DPS_Status DPS_SendAcknowledgement(DPS_Node* node, PublicationAck* ack, RemoteNode* ackNode)
 {
-    DPS_Status ret;
     uv_buf_t uvBufs[] = {
-        uv_buf_init((char*)ack->headers.base, DPS_TxBufferUsed(&ack->headers)),
-        uv_buf_init((char*)ack->payload.base, DPS_TxBufferUsed(&ack->payload))
+        uv_buf_init((char*)ack->buf.base, DPS_TxBufferUsed(&ack->buf)),
+        uv_buf_init((char*)ack->encryptedBuf.base, DPS_TxBufferUsed(&ack->encryptedBuf))
     };
+    int loopback = DPS_FALSE;
+    DPS_Publication* pub;
+    DPS_Status ret;
 
-    DPS_DBGPRINT("SendAcknowledgement from %d\n", node->port);
+    DPS_DBGPRINT("SendAcknowledgement from %d to %s\n", node->port, DPS_NodeAddrToString(&ackNode->ep.addr));
+
     /*
-     * Ownership of the buffers has been passed to the network
+     * Ownership of the buffers will be passed to the network
      */
-    ack->headers.base = NULL;
-    ack->payload.base = NULL;
-    ret = DPS_NetSend(node, NULL, &ackNode->ep, uvBufs, A_SIZEOF(uvBufs), DPS_OnSendComplete);
-    if (ret != DPS_OK) {
-        DPS_SendFailed(node, &ack->destAddr, uvBufs, A_SIZEOF(uvBufs), ret);
+    ack->buf.base = NULL;
+    ack->encryptedBuf.base = NULL;
+
+    /*
+     * See if this is an ACK for a local publication
+     */
+    for (pub = node->publications; pub != NULL; pub = pub->next) {
+        if (DPS_UUIDCompare(&pub->shared->pubId, &ack->pubId) == 0) {
+            loopback = DPS_TRUE;
+            break;
+        }
+    }
+
+    if (loopback) {
+        ret = DPS_LoopbackSend(node, uvBufs, A_SIZEOF(uvBufs));
+        if (ret == DPS_OK) {
+            DPS_NetFreeBufs(uvBufs, A_SIZEOF(uvBufs));
+        } else {
+            DPS_SendFailed(node, &ack->destAddr, uvBufs, A_SIZEOF(uvBufs), ret);
+        }
+    } else {
+        ret = DPS_NetSend(node, NULL, &ackNode->ep, uvBufs, A_SIZEOF(uvBufs), DPS_OnSendComplete);
+        if (ret != DPS_OK) {
+            DPS_SendFailed(node, &ack->destAddr, uvBufs, A_SIZEOF(uvBufs), ret);
+        }
     }
     return ret;
 }
@@ -82,21 +104,9 @@ static PublicationAck* AllocPubAck(const DPS_UUID* pubId, uint32_t sequenceNum)
     return ack;
 }
 
-static DPS_Status GetKey(void* ctx, const DPS_UUID* kid, int8_t alg, uint8_t key[AES_128_KEY_LEN])
-{
-    DPS_Node* node = (DPS_Node*)ctx;
-    DPS_KeyStore* keyStore = node->keyStore;
-
-    if (keyStore && keyStore->contentKeyCB) {
-        return keyStore->contentKeyCB(keyStore, kid, key, AES_128_KEY_LEN);
-    } else {
-        return DPS_ERR_MISSING;
-    }
-}
-
 static DPS_Status SerializeAck(const DPS_Publication* pub, PublicationAck* ack, const uint8_t* data, size_t dataLen)
 {
-    DPS_Node* node = pub->node;
+    DPS_Node* node = pub->shared->node;
     DPS_Status ret;
     uint8_t* aadPos;
     size_t len;
@@ -108,50 +118,65 @@ static DPS_Status SerializeAck(const DPS_Publication* pub, PublicationAck* ack, 
     if (!node->netCtx) {
         return DPS_ERR_NETWORK;
     }
-    /*
-     * Ack is encoded as an array of 3 elements
-     *  [
-     *      type,
-     *      { body }
-     *      payload (bstr)
-     *  ]
-     */
-    len = CBOR_SIZEOF_ARRAY(3) +
+
+    len = CBOR_SIZEOF_ARRAY(5) +
           CBOR_SIZEOF(uint8_t) +
-
+          CBOR_SIZEOF(uint8_t) +
           CBOR_SIZEOF_MAP(2) + 2 * CBOR_SIZEOF(uint8_t) +
-          CBOR_SIZEOF_BSTR(sizeof(DPS_UUID)) +
+          CBOR_SIZEOF_BYTES(sizeof(DPS_UUID)) +
           CBOR_SIZEOF(uint32_t);
-
-    ret = DPS_TxBufferInit(&ack->headers, NULL, len);
+    ret = DPS_TxBufferInit(&ack->buf, NULL, len);
     if (ret != DPS_OK) {
         return ret;
     }
-    ret = CBOR_EncodeArray(&ack->headers, 3);
+    ret = CBOR_EncodeArray(&ack->buf, 5);
     if (ret == DPS_OK) {
-        ret = CBOR_EncodeUint8(&ack->headers, DPS_MSG_TYPE_ACK);
-    }
-    aadPos = ack->headers.txPos;
-    if (ret == DPS_OK) {
-        ret = CBOR_EncodeMap(&ack->headers, 2);
+        ret = CBOR_EncodeUint8(&ack->buf, DPS_MSG_VERSION);
     }
     if (ret == DPS_OK) {
-        ret = CBOR_EncodeUint8(&ack->headers, DPS_CBOR_KEY_PUB_ID);
+        ret = CBOR_EncodeUint8(&ack->buf, DPS_MSG_TYPE_ACK);
+    }
+    /*
+     * Encode the (empty) unprotected map
+     */
+    if (ret == DPS_OK) {
+        ret = CBOR_EncodeMap(&ack->buf, 0);
+    }
+    /*
+     * Encode the protected map
+     */
+    aadPos = ack->buf.txPos;
+    if (ret == DPS_OK) {
+        ret = CBOR_EncodeMap(&ack->buf, 2);
     }
     if (ret == DPS_OK) {
-        ret = CBOR_EncodeBytes(&ack->headers, (uint8_t*)&ack->pubId, sizeof(ack->pubId));
+        ret = CBOR_EncodeUint8(&ack->buf, DPS_CBOR_KEY_PUB_ID);
     }
     if (ret == DPS_OK) {
-        ret = CBOR_EncodeUint8(&ack->headers, DPS_CBOR_KEY_SEQ_NUM);
+        ret = CBOR_EncodeBytes(&ack->buf, (uint8_t*)&ack->pubId, sizeof(ack->pubId));
     }
     if (ret == DPS_OK) {
-        ret = CBOR_EncodeUint32(&ack->headers, ack->sequenceNum);
+        ret = CBOR_EncodeUint8(&ack->buf, DPS_CBOR_KEY_SEQ_NUM);
     }
     if (ret == DPS_OK) {
-        ret = DPS_TxBufferInit(&ack->payload, NULL, CBOR_SIZEOF_BSTR(dataLen));
+        ret = CBOR_EncodeUint32(&ack->buf, ack->sequenceNum);
+    }
+    /*
+     * Encode the encrypted map
+     */
+    if (ret == DPS_OK) {
+        len = CBOR_SIZEOF_MAP(1) + CBOR_SIZEOF(uint8_t) +
+            CBOR_SIZEOF_BYTES(dataLen);
+        ret = DPS_TxBufferInit(&ack->encryptedBuf, NULL, len);
     }
     if (ret == DPS_OK) {
-        ret = CBOR_EncodeBytes(&ack->payload, data, dataLen);
+        ret = CBOR_EncodeMap(&ack->encryptedBuf, 1);
+    }
+    if (ret == DPS_OK) {
+        ret = CBOR_EncodeUint8(&ack->encryptedBuf, DPS_CBOR_KEY_DATA);
+    }
+    if (ret == DPS_OK) {
+        ret = CBOR_EncodeBytes(&ack->encryptedBuf, data, dataLen);
     }
     if (ret != DPS_OK) {
         return ret;
@@ -159,26 +184,32 @@ static DPS_Status SerializeAck(const DPS_Publication* pub, PublicationAck* ack, 
     /*
      * If the publication was encrypted the ack must be too
      */
-    if (pub->keyId) {
-        DPS_RxBuffer aad;
-        DPS_RxBuffer plainText;
-        DPS_TxBuffer cipherText;
-        uint8_t nonce[DPS_COSE_NONCE_SIZE];
+    if (pub->shared->recipients) {
+        DPS_RxBuffer aadBuf;
+        DPS_RxBuffer plainTextBuf;
+        DPS_TxBuffer cipherTextBuf;
+        uint8_t nonce[COSE_NONCE_LEN];
 
-        DPS_RxBufferInit(&aad, aadPos, ack->headers.txPos - aadPos);
-        DPS_TxBufferToRx(&ack->payload, &plainText);
-
+        DPS_RxBufferInit(&aadBuf, aadPos, ack->buf.txPos - aadPos);
+        DPS_TxBufferToRx(&ack->encryptedBuf, &plainTextBuf);
         DPS_MakeNonce(&ack->pubId, ack->sequenceNum, DPS_MSG_TYPE_ACK, nonce);
-        ret = COSE_Encrypt(AES_CCM_16_128_128, pub->keyId, nonce, &aad, &plainText, GetKey, node, &cipherText);
-        DPS_TxBufferFree(&ack->payload);
-        ack->payload = cipherText;
+        ret = COSE_Encrypt(COSE_ALG_A256GCM, nonce, node->signer.alg ? &node->signer : NULL,
+                           pub->shared->recipients, pub->shared->recipientsCount, &aadBuf, &plainTextBuf,
+                           node->keyStore, &cipherTextBuf);
+        DPS_TxBufferFree(&ack->encryptedBuf);
+        if (ret == DPS_OK) {
+            ack->encryptedBuf = cipherTextBuf;
+        } else {
+            DPS_WARNPRINT("COSE_Encrypt failed: %s\n", DPS_ErrTxt(ret));
+        }
     }
     return ret;
 }
 
-DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxBuffer* buffer)
+DPS_Status DPS_DecodeAcknowledgement(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxBuffer* buf)
 {
-    static const int32_t HeaderKeys[] = { DPS_CBOR_KEY_PUB_ID, DPS_CBOR_KEY_SEQ_NUM };
+    static const int32_t ProtectedKeys[] = { DPS_CBOR_KEY_PUB_ID, DPS_CBOR_KEY_SEQ_NUM };
+    static const int32_t EncryptedKeys[] = { DPS_CBOR_KEY_DATA };
     DPS_Status ret;
     DPS_Publication* pub;
     CBOR_MapState mapState;
@@ -186,22 +217,31 @@ DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxB
     uint32_t sequenceNum;
     DPS_UUID* pubId = NULL;
     DPS_NodeAddress* addr;
-    uint8_t* aadPos = buffer->rxPos;
+    uint8_t* aadPos;
+    uint8_t maj;
     size_t len;
 
     DPS_DBGTRACE();
 
-
     /*
-     * Parse keys from body map
+     * Skip the (empty) unprotected map
      */
-    ret = DPS_ParseMapInit(&mapState, buffer, HeaderKeys, A_SIZEOF(HeaderKeys));
+    ret = CBOR_Skip(buf, &maj, &len);
     if (ret != DPS_OK) {
         return ret;
     }
+    if (maj != CBOR_MAP) {
+        ret = DPS_ERR_INVALID;
+        return ret;
+    }
     /*
-     * Parse out the body fields
+     * Decode the protected map
      */
+    aadPos = buf->rxPos;
+    ret = DPS_ParseMapInit(&mapState, buf, ProtectedKeys, A_SIZEOF(ProtectedKeys), NULL, 0);
+    if (ret != DPS_OK) {
+        return ret;
+    }
     while (!DPS_ParseMapDone(&mapState)) {
         int32_t key;
         ret = DPS_ParseMapNext(&mapState, &key);
@@ -210,7 +250,7 @@ DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxB
         }
         switch (key) {
         case DPS_CBOR_KEY_PUB_ID:
-            ret = CBOR_DecodeBytes(buffer, (uint8_t**)&pubId, &len);
+            ret = CBOR_DecodeBytes(buf, (uint8_t**)&pubId, &len);
             if (ret == DPS_OK) {
                 if (len != sizeof(DPS_UUID)) {
                     ret = DPS_ERR_INVALID;
@@ -218,7 +258,7 @@ DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxB
             }
             break;
         case DPS_CBOR_KEY_SEQ_NUM:
-            ret = CBOR_DecodeUint32(buffer, &sequenceNum);
+            ret = CBOR_DecodeUint32(buf, &sequenceNum);
             if ((ret == DPS_OK) && (sequenceNum == 0)) {
                 ret = DPS_ERR_INVALID;
             }
@@ -235,55 +275,70 @@ DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxB
     /*
      * See if this is an ACK for a local publication
      */
-    for (pub = node->publications; pub != NULL; pub = pub->next) {
-        if (pub->handler && (pub->sequenceNum == sequenceNum) && (DPS_UUIDCompare(&pub->pubId, pubId) == 0)) {
-            break;
-        }
-    }
+    pub = DPS_LookupAckHandler(node, pubId, sequenceNum);
     if (pub) {
+        uint8_t nonce[COSE_NONCE_LEN];
+        COSE_Entity recipient;
+        DPS_RxBuffer encryptedBuf;
+        DPS_RxBuffer aadBuf;
+        DPS_RxBuffer cipherTextBuf;
+        DPS_TxBuffer plainTextBuf;
         /*
          * Increase the refcount to prevent the publication from being
          * freed from inside the callback function
          */
         DPS_PublicationIncRef(pub);
         DPS_UnlockNode(node);
-        if (pub->handler) {
-            uint8_t nonce[DPS_COSE_NONCE_SIZE];
-            DPS_UUID keyId;
-            DPS_RxBuffer payload;
-            DPS_RxBuffer aad;
-            DPS_RxBuffer cipherText;
-            DPS_TxBuffer plainText;
-            /*
-             * Try to decrypt the acknowledgement
-             */
-            DPS_MakeNonce(pubId, sequenceNum, DPS_MSG_TYPE_ACK, nonce);
-            DPS_RxBufferInit(&aad, aadPos, buffer->rxPos - aadPos);
-            DPS_RxBufferInit(&cipherText, buffer->rxPos, DPS_RxBufferAvail(buffer));
-            ret = COSE_Decrypt(nonce, &keyId, &aad, &cipherText, GetKey, node, &plainText);
-            if (ret == DPS_OK) {
-                DPS_DBGPRINT("Ack was decrypted\n");
-                DPS_TxBufferToRx(&plainText, &payload);
-            } else if (ret == DPS_ERR_NOT_ENCRYPTED) {
-                if (node->isSecured) {
-                    DPS_ERRPRINT("Ack was not encrypted - discarding\n");
-                } else {
-                    payload = cipherText;
-                    ret = DPS_OK;
-                }
-            } else {
-                DPS_ERRPRINT("Failed to decrypt Ack - %s\n", DPS_ErrTxt(ret));
-            }
-            if (ret == DPS_OK) {
-                uint8_t* data;
-                size_t len;
-                ret = CBOR_DecodeBytes(&payload, &data, &len);
-                if (ret == DPS_OK) {
-                    pub->handler(pub, data, len);
-                }
-            }
-            DPS_TxBufferFree(&plainText);
+        /*
+         * Try to decrypt the acknowledgement
+         */
+        DPS_MakeNonce(pubId, sequenceNum, DPS_MSG_TYPE_ACK, nonce);
+        DPS_RxBufferInit(&aadBuf, aadPos, buf->rxPos - aadPos);
+        DPS_RxBufferInit(&cipherTextBuf, buf->rxPos, DPS_RxBufferAvail(buf));
+        ret = COSE_Decrypt(nonce, &recipient, &aadBuf, &cipherTextBuf, node->keyStore,
+                           &pub->shared->ack, &plainTextBuf);
+        if (ret == DPS_OK) {
+            DPS_DBGPRINT("Ack was decrypted\n");
+            CBOR_Dump("plaintext", plainTextBuf.base, DPS_TxBufferUsed(&plainTextBuf));
+            DPS_TxBufferToRx(&plainTextBuf, &encryptedBuf);
+        } else if (ret == DPS_ERR_NOT_ENCRYPTED) {
+            DPS_DBGPRINT("Ack was not encrypted\n");
+            encryptedBuf = cipherTextBuf;
+            ret = DPS_OK;
+        } else {
+            DPS_ERRPRINT("Failed to decrypt Ack - %s\n", DPS_ErrTxt(ret));
         }
+        if (ret == DPS_OK) {
+            uint8_t* data = NULL;
+            size_t dataLen = 0;
+            ret = DPS_ParseMapInit(&mapState, &encryptedBuf, EncryptedKeys, A_SIZEOF(EncryptedKeys), NULL, 0);
+            if (ret == DPS_OK) {
+                while (!DPS_ParseMapDone(&mapState)) {
+                    int32_t key;
+                    ret = DPS_ParseMapNext(&mapState, &key);
+                    if (ret != DPS_OK) {
+                        break;
+                    }
+                    switch (key) {
+                    case DPS_CBOR_KEY_DATA:
+                        /*
+                         * Get the pointer to the ack data
+                         */
+                        ret = CBOR_DecodeBytes(&encryptedBuf, &data, &dataLen);
+                        break;
+                    }
+                    if (ret != DPS_OK) {
+                        break;
+                    }
+                }
+                if (ret == DPS_OK) {
+                    pub->shared->handler(pub, data, dataLen);
+                }
+            }
+        }
+        DPS_TxBufferFree(&plainTextBuf);
+        /* Ack ID will be invalid now */
+        memset(&pub->shared->ack, 0, sizeof(pub->shared->ack));
         DPS_LockNode(node);
         DPS_PublicationDecRef(pub);
         DPS_UnlockNode(node);
@@ -294,8 +349,9 @@ DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxB
      * Search the history record for somewhere to forward the ACK
      */
     ret = DPS_LookupPublisherForAck(&node->history, pubId, &sn, &addr);
-    if ((ret == DPS_OK) && (sequenceNum <= sn) && addr) {
+    if ((ret == DPS_OK) && (sequenceNum <= sn) && addr && !DPS_SameAddr(&ep->addr, addr)) {
         RemoteNode* ackNode;
+        DPS_LockNode(node);
         ret = DPS_AddRemoteNode(node, addr, NULL, &ackNode);
         if (ret == DPS_OK || ret == DPS_ERR_EXISTS) {
             uv_buf_t uvBuf;
@@ -303,10 +359,10 @@ DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxB
             /*
              * The ACK is forwarded exactly as received
              */
-            uvBuf.len = (uint32_t)(buffer->eod - buffer->base);
+            uvBuf.len = (uint32_t)(buf->eod - buf->base);
             uvBuf.base = malloc(uvBuf.len);
             if (uvBuf.base) {
-                memcpy_s(uvBuf.base, uvBuf.len, buffer->base, uvBuf.len);
+                memcpy_s(uvBuf.base, uvBuf.len, buf->base, uvBuf.len);
                 ret = DPS_NetSend(node, NULL, &ackNode->ep, &uvBuf, 1, DPS_OnSendComplete);
                 if (ret != DPS_OK) {
                     DPS_SendFailed(node, &ackNode->ep.addr, &uvBuf, 1, ret);
@@ -315,15 +371,16 @@ DPS_Status DPS_DecodeAcknowledgment(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxB
                 ret = DPS_ERR_RESOURCES;
             }
         }
+        DPS_UnlockNode(node);
     }
     return ret;
 }
 
-DPS_Status DPS_AckPublication(const DPS_Publication* pub, const uint8_t* payload, size_t len)
+DPS_Status DPS_AckPublication(const DPS_Publication* pub, const uint8_t* data, size_t dataLen)
 {
     DPS_Status ret;
     DPS_NodeAddress* addr = NULL;
-    DPS_Node* node = pub ? pub->node : NULL;
+    DPS_Node* node = pub ? pub->shared->node : NULL;
     uint32_t sequenceNum;
     PublicationAck* ack;
 
@@ -335,19 +392,20 @@ DPS_Status DPS_AckPublication(const DPS_Publication* pub, const uint8_t* payload
     if (pub->flags & PUB_FLAG_LOCAL) {
         return DPS_ERR_INVALID;
     }
-    ret = DPS_LookupPublisherForAck(&node->history, &pub->pubId, &sequenceNum, &addr);
+    ret = DPS_LookupPublisherForAck(&node->history, &pub->shared->pubId, &sequenceNum, &addr);
     if (ret != DPS_OK) {
         return ret;
     }
     if (!addr) {
         return DPS_ERR_NO_ROUTE;
     }
-    DPS_DBGPRINT("Queueing acknowledgement for %s/%d to %s\n", DPS_UUIDToString(&pub->pubId), pub->sequenceNum, DPS_NodeAddrToString(addr));
-    ack = AllocPubAck(&pub->pubId, pub->sequenceNum);
+    DPS_DBGPRINT("Queueing acknowledgement for %s/%d to %s\n", DPS_UUIDToString(&pub->shared->pubId),
+                 pub->sequenceNum, DPS_NodeAddrToString(addr));
+    ack = AllocPubAck(&pub->shared->pubId, pub->sequenceNum);
     if (!ack) {
         return DPS_ERR_RESOURCES;
     }
-    ret = SerializeAck(pub, ack, payload, len);
+    ret = SerializeAck(pub, ack, data, dataLen);
     if (ret == DPS_OK) {
         ack->destAddr = *addr;
         DPS_QueuePublicationAck(node, ack);

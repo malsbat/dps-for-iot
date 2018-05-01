@@ -23,7 +23,6 @@
 #include <malloc.h>
 #include <string.h>
 #include <assert.h>
-#include <uv.h>
 #include <dps/dps.h>
 #include <dps/dbg.h>
 #include <dps/uuid.h>
@@ -246,6 +245,8 @@ DPS_Status DPS_DeletePubHistory(DPS_History* history, DPS_UUID* pubId)
 {
     DPS_PubHistory* ph;
 
+    DPS_DBGTRACE();
+
     ph = Find(history, pubId);
     if (!ph) {
         return DPS_ERR_MISSING;
@@ -259,6 +260,8 @@ DPS_Status DPS_DeletePubHistory(DPS_History* history, DPS_UUID* pubId)
 
 void DPS_FreshenHistory(DPS_History* history)
 {
+    DPS_DBGTRACE();
+
     uv_mutex_lock(&history->lock);
     if (history->count > HISTORY_THRESHOLD) {
         uint64_t now;
@@ -288,6 +291,8 @@ DPS_Status DPS_UpdatePubHistory(DPS_History* history, DPS_UUID* pubId, uint32_t 
     uint64_t now = uv_now(history->loop);
     DPS_PubHistory* phNew = calloc(1, sizeof(DPS_PubHistory));
     DPS_PubHistory* ph;
+
+    DPS_DBGTRACE();
 
     if (!phNew) {
         return DPS_ERR_RESOURCES;
@@ -335,6 +340,8 @@ int DPS_PublicationIsStale(DPS_History* history, DPS_UUID* pubId, uint32_t seque
     int stale = DPS_FALSE;
     DPS_PubHistory* ph;
 
+    DPS_DBGTRACE();
+
     uv_mutex_lock(&history->lock);
     ph = Find(history, pubId);
     if (ph && (sequenceNum <= ph->sn)) {
@@ -346,7 +353,11 @@ int DPS_PublicationIsStale(DPS_History* history, DPS_UUID* pubId, uint32_t seque
 
 void DPS_HistoryFree(DPS_History* history)
 {
-    DPS_PubHistory* ph = history->soonest;
+    DPS_PubHistory* ph;
+
+    DPS_DBGTRACE();
+
+    ph = history->soonest;
     while (ph) {
         DPS_PubHistory* next = ph->next;
         FreePubHistory(ph);
@@ -361,6 +372,8 @@ DPS_Status DPS_LookupPublisherForAck(DPS_History* history, const DPS_UUID* pubId
 {
     DPS_Status ret;
     DPS_PubHistory* ph;
+
+    DPS_DBGTRACE();
 
     uv_mutex_lock(&history->lock);
     ph = Find(history, pubId);
@@ -381,6 +394,8 @@ int DPS_PublicationReceivedFrom(DPS_History* history, DPS_UUID* pubId, uint32_t 
 {
     DPS_PubHistory* ph;
     int ret;
+
+    DPS_DBGTRACE();
 
     if (DPS_SameAddr(source, destination)) {
         return DPS_TRUE;

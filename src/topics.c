@@ -126,7 +126,7 @@ DPS_Status DPS_AddTopic(DPS_BitVector* bf, const char* topic, const char* separa
     if (!bf || !topic || !separators) {
         return DPS_ERR_NULL;
     }
-    tlen = strnlen(topic, DPS_MAX_TOPIC_STRLEN + 1);
+    tlen = strnlen_s(topic, DPS_MAX_TOPIC_STRLEN + 1);
     if (tlen > DPS_MAX_TOPIC_STRLEN) {
         DPS_ERRPRINT("Topic string too long\n");
         return DPS_ERR_INVALID;
@@ -250,10 +250,12 @@ DPS_Status DPS_MatchTopicString(const char* pubTopic, const char* subTopic, cons
             }
             ++subTopic;
         }
-        if (*pubTopic++ != *subTopic++) {
+        if (*pubTopic != *subTopic) {
             *match = DPS_FALSE;
             break;
         }
+        ++pubTopic;
+        ++subTopic;
     }
     if (*subTopic || *pubTopic) {
         *match = DPS_FALSE;

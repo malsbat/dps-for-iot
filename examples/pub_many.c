@@ -30,6 +30,8 @@
 #include <dps/synchronous.h>
 #include <dps/event.h>
 
+#define A_SIZEOF(a)  (sizeof(a) / sizeof((a)[0]))
+
 #define MAX_TOPICS 64
 #define MAX_MSG_LEN 128
 
@@ -46,7 +48,7 @@ static void OnNodeDestroyed(DPS_Node* node, void* data)
 
 static void OnAck(DPS_Publication* pub, uint8_t* data, size_t len)
 {
-    DPS_Node* node = DPS_GetPublicationNode(pub);
+    DPS_Node* node = DPS_PublicationGetNode(pub);
 
     if (!quiet) {
         DPS_PRINT("Ack for pub UUID %s(%d)\n", DPS_UUIDToString(DPS_PublicationGetUUID(pub)), DPS_PublicationGetSequenceNum(pub));
@@ -183,7 +185,7 @@ int main(int argc, char** argv)
 
     nodeDestroyed = DPS_CreateEvent();
 
-    ret = DPS_Publish(pub, msg, msg ? strnlen(msg, MAX_MSG_LEN) + 1 : 0, ttl);
+    ret = DPS_Publish(pub, (uint8_t*)msg, msg ? strnlen(msg, MAX_MSG_LEN) + 1 : 0, ttl);
     if (ret == DPS_OK) {
         DPS_PRINT("Pub UUID %s\n", DPS_UUIDToString(DPS_PublicationGetUUID(pub)));
     } else {

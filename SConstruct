@@ -8,9 +8,11 @@ bindings = Split('python nodejs')
 # Generic build variables
 vars.AddVariables(
     EnumVariable('variant', 'Build variant', default='release', allowed_values=('debug', 'release'), ignorecase=2),
-    EnumVariable('transport', 'Transport protocol', default='udp', allowed_values=('udp', 'tcp', 'dtls'), ignorecase=2),
+    EnumVariable('transport', 'Transport protocol', default='udp', allowed_values=('udp', 'tcp', 'dtls', 'fuzzer'), ignorecase=2),
     EnumVariable('target', 'Build target', default='local', allowed_values=('local', 'yocto'), ignorecase=2),
-    ListVariable('bindings', 'Bindings to build', bindings, bindings))
+    ListVariable('bindings', 'Bindings to build', bindings, bindings),
+    ('CC', 'C compiler to use'),
+    ('CXX', 'C++ compiler to use'))
 
 # Windows-specific command line variables
 if platform.system() == 'Windows':
@@ -27,9 +29,13 @@ if platform.system() == 'Linux':
         PathVariable('UV_INC', 'Path where libuv includes are installed', '', PathVariable.PathAccept),
         PathVariable('UV_LIB', 'Path where libuv libraries are installed', '', PathVariable.PathAccept),
         BoolVariable('profile', 'Build for profiling?', False),
-        BoolVariable('asan', 'Enable address sanitizer?', False))
+        BoolVariable('asan', 'Enable address sanitizer?', False),
+        BoolVariable('tsan', 'Enable thread sanitizer?', False),
+        BoolVariable('ubsan', 'Enable undefined behavior sanitizer?', False),
+        BoolVariable('fsan', 'Enable fuzzer sanitizer?', False),
+        BoolVariable('cov', 'Enable code coverage?', False))
 
-tools=['default', 'textfile']
+tools=['default', 'textfile', DPS]
 # Doxygen is optional
 try:
     env = Environment(tools=['doxygen'])
@@ -45,7 +51,6 @@ env = Environment(
     ],
     CPPPATH=[
         '#/inc',
-        '#/ext/tinycrypt/lib/include',
         '#/ext/safestring/include',
         '#/ext',
         '#/ext/mbedtls/include',
@@ -68,31 +73,29 @@ if env['transport'] == 'udp':
     env['USE_UDP'] = 'true'
     env['CPPDEFINES'].append('DPS_USE_UDP')
 
-print "Building for " + env['variant']
+print("Building for " + env['variant'])
 
 # Platform specific configuration
 
 if env['PLATFORM'] == 'win32':
 
-    env.Append(CFLAGS = ['/J', '/W3', '/nologo'])
-    env.Append(CPPDEFINES = ['_CRT_SECURE_NO_WARNINGS'])
+    env.Append(CCFLAGS = ['/J', '/W3', '/WX', '/nologo'])
 
     # We are getting our secure memory and string functions for
     # SafeStringLib so need to disable the Windows supplied versions
     env.Append(CPPDEFINES = ['__STDC_WANT_SECURE_LIB__=0'])
 
     if env['variant'] == 'debug':
-        env.Append(CFLAGS = ['/Zi', '/MT', '/Od', '-DDPS_DEBUG'])
+        env.Append(CCFLAGS = ['/Zi', '/MT', '/Od', '-DDPS_DEBUG'])
         env.Append(LINKFLAGS = ['/DEBUG'])
     else:
-        env.Append(CFLAGS = ['/Gy', '/O2', '/GF', '/MT'])
+        env.Append(CCFLAGS = ['/Gy', '/O2', '/GF', '/MT'])
         env.Append(LINKFLAGS = ['/opt:ref'])
 
-
     # Stack-based Buffer Overrun Detection
-    env.Append(CFLAGS = ['/GS'])
+    env.Append(CCFLAGS = ['/GS'])
     # Compiler settings validation
-    env.Append(CFLAGS = ['/sdl'])
+    env.Append(CCFLAGS = ['/sdl'])
 
     # Data Execution Prevention
     env.Append(LINKFLAGS = ['/NXCompat'])
@@ -104,7 +107,7 @@ if env['PLATFORM'] == 'win32':
     env['PY_LIBPATH'] = [env['PYTHON_PATH'] + '\libs']
 
     # Where to find libuv and the libraries it needs
-    env['UV_LIBS'] = ['libuv', 'ws2_32','iphlpapi']
+    env['UV_LIBS'] = ['libuv', 'ws2_32', 'iphlpapi', 'advapi32']
     env.Append(LIBPATH=[env['UV_LIB']])
     env.Append(CPPPATH=[env['UV_INC']])
 
@@ -116,42 +119,87 @@ elif env['PLATFORM'] == 'posix':
 
     # Enable address sanitizer
     if env['asan'] == True:
-        env.Append(CFLAGS = ['-fno-omit-frame-pointer', '-fsanitize=address'])
-        env.Append(LIBS = ['asan'])
+        env.Append(CCFLAGS = ['-fno-omit-frame-pointer', '-fsanitize=address'])
+        if env['CC'].endswith('gcc'):
+            env.Append(LIBS = ['asan'])
+        elif env['CC'].endswith('clang'):
+            env.Append(LINKFLAGS = ['-fsanitize=address'])
+        else:
+            print('Unsupported compiler')
+            exit();
+
+    # Enable thread sanitizer
+    if env['tsan'] == True:
+        env.Append(CCFLAGS = ['-fsanitize=thread'])
+        if env['CC'].endswith('gcc'):
+            env.Append(LIBS = ['tsan'])
+        elif env['CC'].endswith('clang'):
+            env.Append(LINKFLAGS = ['-fsanitize=thread'])
+        else:
+            print('Unsupported compiler')
+            exit();
+
+    # Enable undefined behavior sanitizer
+    if env['ubsan'] == True:
+        env.Append(CCFLAGS = ['-fsanitize=undefined'])
+        if env['CC'].endswith('gcc'):
+            env.Append(LIBS = ['ubsan'])
+        elif env['CC'].endswith('clang'):
+            env.Append(LINKFLAGS = ['-fsanitize=undefined'])
+        else:
+            print('Unsupported compiler')
+            exit();
+
+    # Enable fuzzer sanitizer
+    if env['fsan'] == True:
+        if env['CC'].endswith('clang'):
+            env.Append(CCFLAGS = ['-fsanitize=fuzzer-no-link'])
+        else:
+            print('Unsupported compiler')
+            exit();
+
+    # Enable code coverage
+    if env['cov'] == True:
+        if env['CC'].endswith('clang'):
+            env.Append(CCFLAGS = ['-fprofile-instr-generate', '-fcoverage-mapping'])
+            env.Append(LINKFLAGS = ['-fprofile-instr-generate', '-fcoverage-mapping'])
+        else:
+            print('Unsupported compiler')
+            exit();
 
     # Stack execution protection:
-    env.Append(LDFLAGS = ['-z noexecstack'])
+    env.Append(LINKFLAGS = ['-z', 'noexecstack'])
 
     # Data relocation and protection (RELRO):
-    env.Append(LDLFAGS= ['-z relro', '-z now'])
+    env.Append(LINKFLAGS = ['-z', 'relro', '-z', 'now'])
 
     # Stack-based Buffer Overrun Detection:
-    env.Append(CFLAGS = ['-fstack-protector-strong'])
+    env.Append(CCFLAGS = ['-fstack-protector-strong'])
 
     # Position Independent Execution (PIE)
-    env.Append(CFLAGS = ['-fPIE', '-fPIC'])
-    env.Append(LDFLAGS = ['-pie']) # PIE for executables only
+    env.Append(CCFLAGS = ['-fPIE', '-fPIC'])
+    env.Append(LINKFLAGS = ['-pie']) # PIE for executables only
 
     # Fortify source:
     env.Append(CPPDEFINES = ['_FORTIFY_SOURCE=2'])
 
     # Format string vulnerabilities
-    env.Append(CFLAGS= ['-Wformat', '-Wformat-security'])
+    env.Append(CCFLAGS= ['-Wformat', '-Wformat-security'])
 
     # gcc option  -mmsse4.2 is to enble generation of popcountq instruction
-    env.Append(CFLAGS = ['-ggdb', '-msse4.2'])
+    env.Append(CCFLAGS = ['-ggdb', '-msse4.2'])
 
     # Treat warnings as errors
-    env.Append(CFLAGS = ['-Werror'])
+    env.Append(CCFLAGS = ['-Werror'])
 
     if env['profile'] == True:
-        env.Append(CFLAGS = ['-pg'])
+        env.Append(CCFLAGS = ['-pg'])
         env.Append(LINKFLAGS = ['-pg'])
 
     if env['variant'] == 'debug':
-        env.Append(CFLAGS = ['-O', '-DDPS_DEBUG'])
+        env.Append(CCFLAGS = ['-O', '-DDPS_DEBUG'])
     else:
-        env.Append(CFLAGS = ['-O3', '-DNDEBUG'])
+        env.Append(CCFLAGS = ['-O3', '-DNDEBUG'])
 
     # Where to find Python.h
     if env['target'] == 'yocto':
@@ -170,12 +218,12 @@ elif env['PLATFORM'] == 'posix':
         env.Prepend(CPPPATH = env['UV_INC'])
 
 else:
-    print 'Unsupported system'
+    print('Unsupported system')
     exit()
 
 env.Append(LIBPATH=['./ext'])
 
-print env['CPPDEFINES']
+print(env['CPPDEFINES'])
 
 if env['target'] == 'yocto':
     env_options = ["SYSROOT", "CC", "AR", "ARFLAGS", "CCFLAGS", "CFLAGS", "CXX", "CXXFLAGS", "LINKFLAGS", "STRIP", "PKG_CONFIG", "CHRPATH", "LD", "TAR"]
@@ -195,13 +243,15 @@ if env['target'] == 'yocto':
 # Build external dependencies
 ext_libs = SConscript('ext/SConscript', exports=['extEnv'])
 
-SConscript('SConscript', src_dir='.', variant_dir='build/obj', duplicate=0, exports=['env', 'ext_libs'])
+version = '0.9.0'
+
+SConscript('SConscript', src_dir='.', variant_dir='build/obj', duplicate=0, exports=['env', 'ext_libs', 'version'])
 
 ######################################################################
 # Scons to generate the dps_ns3.pc file from dps_ns3.pc.in file
 ######################################################################
 pc_file = 'dps_ns3.pc.in'
 pc_vars = {'\@PREFIX\@': env.GetLaunchDir().encode('string_escape'),
-           '\@VERSION\@': '0.9',
+           '\@VERSION\@': version,
 }
 env.Substfile(pc_file, SUBST_DICT = pc_vars)

@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Local and remote node macros and functions
+ */
+
 /*
  *******************************************************************
  *
@@ -38,129 +43,145 @@
 extern "C" {
 #endif
 
+#define DPS_MSG_VERSION 1 /**< DPS protocol version */
+
 /*
  * DPS message types
  */
-#define DPS_MSG_TYPE_PUB  1   /* Publication */
-#define DPS_MSG_TYPE_SUB  2   /* Subscription */
-#define DPS_MSG_TYPE_ACK  3   /* End-to-end pubication acknowledgement */
-#define DPS_MSG_TYPE_SAK  4   /* One-hop subscription acknowledgement */
+#define DPS_MSG_TYPE_PUB  1   /**< Publication */
+#define DPS_MSG_TYPE_SUB  2   /**< Subscription */
+#define DPS_MSG_TYPE_ACK  3   /**< End-to-end publication acknowledgement */
+#define DPS_MSG_TYPE_SAK  4   /**< One-hop subscription acknowledgement */
 
-#define DPS_NODE_CREATED      0
-#define DPS_NODE_RUNNING      1
-#define DPS_NODE_STOPPING     2
-#define DPS_NODE_STOPPED      3
+#define DPS_NODE_CREATED      0 /**< Node is created */
+#define DPS_NODE_RUNNING      1 /**< Node is running */
+#define DPS_NODE_STOPPING     2 /**< Node is stopping */
+#define DPS_NODE_STOPPED      3 /**< Node is stopped */
 
+#if !defined(DOXYGEN_SKIP_FORWARD_DECLARATION)
 typedef struct _RemoteNode RemoteNode;
-
 typedef struct _PublicationAck PublicationAck;
+typedef struct _LinkMonitor LinkMonitor;
+#endif
 
+/**
+ * Completion context for link and unlink operations
+ */
 typedef struct _OnOpCompletion OnOpCompletion;
 
-typedef struct _LinkMonitor LinkMonitor;
-
+/**
+ * Context for network address resolution
+ */
 typedef struct _ResolverInfo ResolverInfo;
 
-/*
+/**
  * Link monitor configuration values. All times are in milliseconds.
  */
 typedef struct _LinkMonitorConfig {
-    uint16_t retries;  /* Number of probe retries after a timeout */
-    uint16_t retryTO;  /* Probe retry time */
-    uint32_t probeTO;  /* Probe repeat time */
+    uint16_t retries;  /**< Number of probe retries after a timeout */
+    uint16_t retryTO;  /**< Probe retry time */
+    uint32_t probeTO;  /**< Probe repeat time */
 } LinkMonitorConfig;
 
+/**
+ * A local node
+ */
 typedef struct _DPS_Node {
-    void* userData;
+    void* userData;                       /**< Application provided user data */
 
-    uint8_t isSecured;                    /* Indicates if this node is secured */
-    uint8_t lockCount;                    /* Recursive lock counter */
-    uint8_t subsPending;
-    uint16_t port;
-    DPS_UUID meshId;                      /* Randomly allocated mesh id for this node */
-    DPS_UUID minMeshId;                   /* Minimum mesh id seen by this node */
-    char separators[13];                  /* List of separator characters */
-    DPS_KeyStore *keyStore;               /* Functions for loading encryption keys */
-    DPS_UUID keyId;                       /* Encryption key identifier */
+    uint8_t subsPending;                  /**< Used to rate-limit subscription messages */
+    uint16_t port;                        /**< Listening port */
+    DPS_UUID meshId;                      /**< Randomly allocated mesh id for this node */
+    DPS_UUID minMeshId;                   /**< Minimum mesh id seen by this node */
+    char separators[13];                  /**< List of separator characters */
+    DPS_KeyStore *keyStore;               /**< Functions for loading encryption keys */
+    COSE_Entity signer;                   /**< Sign messages with this entity */
 
-    uv_thread_t lockHolder;               /* Thread currently holding the node lock */
-    uv_thread_t thread;                   /* Thread for the event loop */
-    uv_loop_t* loop;                      /* uv lib event loop */
-    uv_mutex_t nodeMutex;                 /* Mutex to protect this node */
-    uv_mutex_t condMutex;                 /* Mutex for use wih condition variables */
+    uv_thread_t thread;                   /**< Thread for the event loop */
+    uv_loop_t* loop;                      /**< uv lib event loop */
+    uv_mutex_t nodeMutex;                 /**< Mutex to protect this node */
+    uv_mutex_t condMutex;                 /**< Mutex for use with condition variables */
 
-    uv_async_t acksAsync;                 /* Async for sending acks */
-    uv_async_t pubsAsync;                 /* Async for sending publications */
-    uv_async_t stopAsync;                 /* Async for shutting down the node */
-    uv_async_t subsAsync;                 /* Async for sending subscriptions */
+    uv_async_t acksAsync;                 /**< Async for sending acks */
+    uv_async_t pubsAsync;                 /**< Async for sending publications */
+    uv_async_t stopAsync;                 /**< Async for shutting down the node */
+    uv_async_t subsAsync;                 /**< Async for sending subscriptions */
 
-    uint32_t subsRate;                    /* Specifies time delay (in msecs) between subscription updates */
-    uv_timer_t subsTimer;                 /* Timer for sending subscriptions */
+    uint32_t subsRate;                    /**< Specifies time delay (in msecs) between subscription updates */
+    uv_timer_t subsTimer;                 /**< Timer for sending subscriptions */
 
     struct {
-        PublicationAck* first;
-        PublicationAck* last;
-    } ackQueue;                           /* Queued acknowledgment packets */
+        PublicationAck* first;            /**< First queued acknowledgement packet */
+        PublicationAck* last;             /**< Last queued acknowledgement packet */
+    } ackQueue;                           /**< Queued acknowledgement packets */
 
-    RemoteNode* remoteNodes;              /* Linked list of remote nodes */
+    RemoteNode* remoteNodes;              /**< Linked list of remote nodes */
 
     struct {
-        DPS_BitVector* needs;             /* Preallocated needs bit vector */
-        DPS_BitVector* interests;         /* Preallocated interests bit vector */
-    } scratch;
+        DPS_BitVector* needs;             /**< Preallocated needs bit vector */
+        DPS_BitVector* interests;         /**< Preallocated interests bit vector */
+    } scratch;                            /**< Preallocated needs and interests */
 
-    DPS_CountVector* interests;           /* Tracks all interests for this node */
-    DPS_CountVector* needs;               /* Tracks all needs for this node */
+    DPS_CountVector* interests;           /**< Tracks all interests for this node */
+    DPS_CountVector* needs;               /**< Tracks all needs for this node */
 
-    DPS_History history;                  /* History of recently sent publications */
+    DPS_History history;                  /**< History of recently sent publications */
 
-    DPS_Publication* publications;        /* Linked list of local and retained publications */
-    DPS_Subscription* subscriptions;      /* Linked list of local subscriptions */
+    DPS_Publication* publications;        /**< Linked list of local and retained publications */
+    DPS_Subscription* subscriptions;      /**< Linked list of local subscriptions */
 
-    DPS_MulticastReceiver* mcastReceiver;
-    DPS_MulticastSender* mcastSender;
+    DPS_MulticastReceiver* mcastReceiver; /**< Multicast receiver context */
+    DPS_MulticastSender* mcastSender;     /**< Multicast sender context */
 
-    DPS_NetContext* netCtx;               /* Network context */
+    DPS_NetContext* netCtx;               /**< Network context */
 
-    uint8_t state;                        /* Indicates if the node is running, stopping, or stopped */
-    DPS_OnNodeDestroyed onDestroyed;      /* Function to call when the node is destroyed */
-    void* onDestroyedData;                /* Context to pass to onDestroyed callback */
+    uint8_t state;                        /**< Indicates if the node is running, stopping, or stopped */
+    DPS_OnNodeDestroyed onDestroyed;      /**< Function to call when the node is destroyed */
+    void* onDestroyedData;                /**< Context to pass to onDestroyed callback */
 
-    LinkMonitorConfig linkMonitorConfig;  /* Configuration parameters for mesh probe publications */
+    LinkMonitorConfig linkMonitorConfig;  /**< Configuration parameters for mesh probe publications */
 
-    uv_async_t resolverAsync;             /* Async handler for address resolver */
-    ResolverInfo* resolverList;           /* Linked list of address resolution requests */
-    uv_async_t completionAsync;           /* Async handler for link completion */
-    OnOpCompletion* completionList;       /* Linked list of completion requests */
+    uv_async_t resolverAsync;             /**< Async handler for address resolver */
+    ResolverInfo* resolverList;           /**< Linked list of address resolution requests */
+    uv_async_t completionAsync;           /**< Async handler for link completion */
+    OnOpCompletion* completionList;       /**< Linked list of completion requests */
 
 } DPS_Node;
 
+/**
+ * Maximum value of a mesh ID
+ */
 extern const DPS_UUID DPS_MaxMeshId;
 
+/**
+ * A remote node
+ */
 typedef struct _RemoteNode {
-    OnOpCompletion* completion;
-    uint8_t linked;                    /* TRUE if this is a node that was explicitly linked */
-    uint8_t unlink;                    /* TRUE if this node is about to be unlinked */
+    OnOpCompletion* completion;        /**< Completion context for link and unlink operations */
+    uint8_t linked;                    /**< TRUE if this is a node that was explicitly linked */
+    uint8_t unlink;                    /**< TRUE if this node is about to be unlinked */
+    /** Inbound state */
     struct {
-        uint8_t muted;                 /* TRUE if the remote informed us the that link is muted */
-        uint32_t revision;             /* Revision number of last subscription received from this node */
-        DPS_UUID meshId;               /* The mesh id received from this remote node */
-        DPS_BitVector* needs;          /* Bit vector of needs received from  this remote node */
-        DPS_BitVector* interests;      /* Bit vector of interests received from  this remote node */
+        uint8_t muted;                 /**< TRUE if the remote informed us the that link is muted */
+        uint32_t revision;             /**< Revision number of last subscription received from this node */
+        DPS_UUID meshId;               /**< The mesh id received from this remote node */
+        DPS_BitVector* needs;          /**< Bit vector of needs received from  this remote node */
+        DPS_BitVector* interests;      /**< Bit vector of interests received from  this remote node */
     } inbound;
+    /** Outbound state */
     struct {
-        uint8_t muted;                 /* TRUE if we have informed the remote that the link is muted */
-        uint8_t deltaInd;              /* TRUE if the interests info is a delta */
-        uint8_t ackCountdown;          /* Number of remaining subscription send retries + 1 */
-        uint32_t revision;             /* Revision number of last subscription sent to this node */
-        DPS_UUID meshId;               /* The mesh id sent to this remote node */
-        DPS_BitVector* needs;          /* Needs bit vector sent outbound to this remote node */
-        DPS_BitVector* interests;      /* Full outbound interests bit vector to this remote node */
-        DPS_BitVector* delta;          /* Delta outbound bit vector sent to this remote node */
+        uint8_t muted;                 /**< TRUE if we have informed the remote that the link is muted */
+        uint8_t deltaInd;              /**< TRUE if the interests info is a delta */
+        uint8_t ackCountdown;          /**< Number of remaining subscription send retries + 1 */
+        uint32_t revision;             /**< Revision number of last subscription sent to this node */
+        DPS_UUID meshId;               /**< The mesh id sent to this remote node */
+        DPS_BitVector* needs;          /**< Needs bit vector sent outbound to this remote node */
+        DPS_BitVector* interests;      /**< Full outbound interests bit vector to this remote node */
+        DPS_BitVector* delta;          /**< Delta outbound bit vector sent to this remote node */
     } outbound;
-    LinkMonitor* monitor;              /* For monitoring muted links */
-    DPS_NetEndpoint ep;
-    RemoteNode* next;                  /* Remotes are a linked list attached to the local node */
+    LinkMonitor* monitor;              /**< For monitoring muted links */
+    DPS_NetEndpoint ep;                /**< The endpoint of the remote */
+    RemoteNode* next;                  /**< Remotes are a linked list attached to the local node */
 } RemoteNode;
 
 /**
@@ -171,34 +192,54 @@ typedef struct _RemoteNode {
 void DPS_UpdateSubs(DPS_Node* node);
 
 /**
- * Queue an acknowledgment to be sent asynchronously
+ * Queue an acknowledgement to be sent asynchronously
  *
  * @param node    The node
- * @param ack     The acknowledgment to queue
+ * @param ack     The acknowledgement to queue
  */
 void DPS_QueuePublicationAck(DPS_Node* node, PublicationAck* ack);
 
 /**
  * Callback function called when a network send operation completes
  *
- * @param node    The node
+ * @param node     Opaque pointer to the DPS node
+ * @param appCtx   An application context to be passed to the send complete callback
+ * @param ep       The endpoint for which the send was completed
+ * @param bufs     Array holding pointers to the buffers passed in the send API call. The data in these buffers
+ *                 can now be freed.
+ * @param numBufs  The length of the bufs array
+ * @param status   Indicates if the send was successful or not
  */
 void DPS_OnSendComplete(DPS_Node* node, void* appCtx, DPS_NetEndpoint* ep, uv_buf_t* bufs, size_t numBufs, DPS_Status status);
 
-/*
+/**
  * Make a nonce for a specific message type
+ *
+ * @param uuid The publication UUID
+ * @param seqNum The publication sequence number
+ * @param msgType The message type (DPS_MSG_TYPE_PUB or DPS_MSG_TYPE_ACK)
+ * @param nonce The computed nonce
  */
-void DPS_MakeNonce(const DPS_UUID* uuid, uint32_t seqNum, uint8_t msgType, uint8_t nonce[DPS_COSE_NONCE_SIZE]);
+void DPS_MakeNonce(const DPS_UUID* uuid, uint32_t seqNum, uint8_t msgType, uint8_t nonce[COSE_NONCE_LEN]);
 
 /**
- * Function to call when a network send operation fails. Must be called with the node lock held.
+ * Function to call when a network send operation fails.
  *
- * @param node    The local node
+ * Must be called with the node lock held.
+ *
+ * @param node     The local node
+ * @param addr     The endpoint for which the send failed
+ * @param bufs     Array holding pointers to the buffers passed in the send API call. The data in these buffers
+ *                 can now be freed.
+ * @param numBufs  The length of the bufs array
+ * @param status   Indicates the send status
  */
 void DPS_SendFailed(DPS_Node* node, DPS_NodeAddress* addr, uv_buf_t* bufs, size_t numBufs, DPS_Status status);
 
 /**
  * Add an entry for new remote node or return a pointer to the existing remote node.
+ *
+ * Must be called with the node lock held.
  *
  * @param node      The local node
  * @param addr      The address of the remote node
@@ -230,6 +271,8 @@ RemoteNode* DPS_LookupRemoteNode(DPS_Node* node, DPS_NodeAddress* addr);
  * @param node    The local node
  * @param src     The remote that just sent a subscription
  * @param meshId  The mesh id in the subscription
+ *
+ * @return non-zero if mesh has loop, 0 otherwise
  */
 int DPS_MeshHasLoop(DPS_Node* node, RemoteNode* src, DPS_UUID* meshId);
 
@@ -239,10 +282,10 @@ int DPS_MeshHasLoop(DPS_Node* node, RemoteNode* src, DPS_UUID* meshId);
  * @param node    The local node
  * @param remote  The remote node to delete
  */
-RemoteNode* DPS_DeleteRemoteNode(DPS_Node* node, RemoteNode* remote);
+void DPS_DeleteRemoteNode(DPS_Node* node, RemoteNode* remote);
 
 /**
- * Complete an asychronous operation on a remote node
+ * Complete an asynchronous operation on a remote node
  *
  * @param node    The local node
  * @param remote  The remote node to complete
@@ -256,6 +299,8 @@ void DPS_RemoteCompletion(DPS_Node* node, RemoteNode* remote, DPS_Status status)
  *
  * @param node    The local node
  * @param remote  The remote node to mute
+ *
+ * @return DPS_OK if mute is successful, an error otherwise
  */
 DPS_Status DPS_MuteRemoteNode(DPS_Node* node, RemoteNode* remote);
 
@@ -264,6 +309,8 @@ DPS_Status DPS_MuteRemoteNode(DPS_Node* node, RemoteNode* remote);
  *
  * @param node    The local node
  * @param remote  The remote node to unmute
+ *
+ * @return DPS_OK if unmute is successful, an error otherwise
  */
 DPS_Status DPS_UnmuteRemoteNode(DPS_Node* node, RemoteNode* remote);
 
@@ -280,6 +327,8 @@ void DPS_ClearInboundInterests(DPS_Node* node, RemoteNode* remote);
  * Set outbound interests and needs to an empty bit vector
  *
  * @param remote  The remote node to clear
+ *
+ * @return DPS_OK if clear is successful, an error otherwise
  */
 DPS_Status DPS_ClearOutboundInterests(RemoteNode* remote);
 
@@ -298,12 +347,15 @@ void DPS_LockNode(DPS_Node* node);
 void DPS_UnlockNode(DPS_Node* node);
 
 /**
- * Check if the current thread is holding the node lock.
- * This is intended for use in asserts.
+ * Look for node's publication matching the ID and sequence number.
  *
- * @param node The node to check
+ * @param node The node
+ * @param pubId The ID to look for
+ * @param sequenceNum The sequence number to look for
+ *
+ * @return The matching publication or NULL
  */
-int DPS_HasNodeLock(DPS_Node* node);
+DPS_Publication* DPS_LookupAckHandler(DPS_Node* node, const DPS_UUID* pubId, uint32_t sequenceNum);
 
 /**
  * Generates a random UUID that is less than the UUID passed in.
@@ -316,7 +368,7 @@ void DPS_RandUUIDLess(DPS_UUID* uuid);
 /**
  * For debug output of mesh ids
  */
-#define UUID_32(n) (((n)->val[0] << 24) | ((n)->val[1] << 16) | ((n)->val[2] << 8) | ((n)->val[3] << 0))
+#define UUID_32(n) (((unsigned)((uint8_t*)(n))[0] << 24) | (((uint8_t*)(n))[1] << 16) | (((uint8_t*)(n))[2] << 8) | (((uint8_t*)(n))[3] << 0))
 
 #ifdef __cplusplus
 }

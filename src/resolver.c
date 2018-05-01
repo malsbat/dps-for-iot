@@ -23,7 +23,6 @@
 #include <assert.h>
 #include <string.h>
 #include <malloc.h>
-#include <uv.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
 #include "resolver.h"
@@ -130,6 +129,7 @@ DPS_Status DPS_ResolveAddress(DPS_Node* node, const char* host, const char* serv
      * after we have confirmed the async_send was sucessful.
      */
     if (uv_async_send(&node->resolverAsync)) {
+        free(resolver);
         ret = DPS_ERR_FAILURE;
     } else {
         resolver->next = node->resolverList;

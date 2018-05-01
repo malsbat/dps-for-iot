@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Synchronous helpers
+ */
+
 /*
  *******************************************************************
  *
@@ -30,29 +35,33 @@ extern "C" {
 #endif
 
 /**
- * Synchronous helper APIs that wrap the asynchronous versions
+ * @addtogroup node
+ * @{
  */
 
-
 /**
- * Resolve a host and port and establish a link to a remote node.
+ * Synchronous helper that wraps DPS_Link().
  *
  * @param node  The local node to link from
- * @param host  The host name or IP address to link to
+ * @param host  The host name or IP address to link to.  A NULL host indicates localhost.
  * @param port  The port number
  * @param addr  Returns the resolved address for the remote node
  *
+ * @return DPS_OK if the link is successful, an error otherwise
  */
 DPS_Status DPS_LinkTo(DPS_Node* node, const char* host, uint16_t port, DPS_NodeAddress* addr);
 
-
 /**
- * Unlink from a previously linked remote node
+ * Synchronous helper that wraps DPS_Unlink().
  *
  * @param node  The local node to unlink from
  * @param addr  The address of the remote node to unlink
+ *
+ * @return DPS_OK if the unlink is successful, an error otherwise
  */
 DPS_Status DPS_UnlinkFrom(DPS_Node* node, DPS_NodeAddress* addr);
+
+/** @} */
 
 #ifdef __cplusplus
 }

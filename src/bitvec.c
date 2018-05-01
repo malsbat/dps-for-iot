@@ -650,34 +650,31 @@ static DPS_Status RunLengthDecode(uint8_t* packed, size_t packedSize, chunk_t* b
             current >>= 1;
             --currentBits;
         } else {
-            uint32_t val;
-            int num0;
+            uint64_t val;
+            uint64_t num0;
             int tz = COUNT_TZ(current);
 
             current >>= (tz + 1);
             /*
              * We can extract the length with a mask
              */
-            val = current & ((1 << tz) - 1);
+            val = current & (((uint64_t)1 << tz) - 1);
             /*
-             * The value is little-endian so we May need to do an endian swap
+             * The value is little-endian so we may need to do an endian swap
              */
 #ifdef ENDIAN_SWAP
-            val = BSWAP_32(val);
+            val = BSWAP_64(val);
 #endif
-            num0 = val + ((1 << tz) - 1);
+            num0 = val + (((uint64_t)1 << tz) - 1);
             bitPos += num0;
-            if (bitPos >= len) {
-                break;
-            }
             currentBits -= (1 + tz * 2);
             current >>= tz;
         }
+        if (bitPos >= len) {
+            return DPS_ERR_INVALID;
+        }
         SET_BIT(bits, bitPos);
         ++bitPos;
-    }
-    if (bitPos > len) {
-        return DPS_ERR_INVALID;
     }
     return DPS_OK;
 }
@@ -754,7 +751,7 @@ DPS_Status DPS_BitVectorSerialize(DPS_BitVector* bv, DPS_TxBuffer* buffer)
 
 size_t DPS_BitVectorSerializeMaxSize(DPS_BitVector* bv)
 {
-    return CBOR_SIZEOF_ARRAY(3) + CBOR_SIZEOF(uint8_t) + CBOR_SIZEOF(uint32_t) + CBOR_SIZEOF_BSTR(bv->len / 8);
+    return CBOR_SIZEOF_ARRAY(3) + CBOR_SIZEOF(uint8_t) + CBOR_SIZEOF(uint32_t) + CBOR_SIZEOF_BYTES(bv->len / 8);
 }
 
 DPS_Status DPS_BitVectorDeserialize(DPS_BitVector* bv, DPS_RxBuffer* buffer)

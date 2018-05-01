@@ -29,6 +29,9 @@
 #include <dps/dps.h>
 #include <dps/synchronous.h>
 #include <dps/event.h>
+#include "keys.h"
+
+#define A_SIZEOF(a)  (sizeof(a) / sizeof((a)[0]))
 
 #define MAX_TOPICS 64
 #define MAX_MSG_LEN 128
@@ -42,21 +45,6 @@ static int requestAck = DPS_FALSE;
 static DPS_Publication* currentPub = NULL;
 
 static DPS_Event* nodeDestroyed;
-
-#define NUM_KEYS 2
-
-static DPS_UUID keyId[NUM_KEYS] = { 
-    { .val = { 0xed,0x54,0x14,0xa8,0x5c,0x4d,0x4d,0x15,0xb6,0x9f,0x0e,0x99,0x8a,0xb1,0x71,0xf2 } },
-    { .val = { 0x53,0x4d,0x2a,0x4b,0x98,0x76,0x1f,0x25,0x6b,0x78,0x3c,0xc2,0xf8,0x12,0x90,0xcc } }
-};
-
-/*
- * Preshared keys for testing only - DO NOT USE THESE KEYS IN A REAL APPLICATION!!!!
- */
-static uint8_t keyData[NUM_KEYS][16] = {
-    { 0x77,0x58,0x22,0xfc,0x3d,0xef,0x48,0x88,0x91,0x25,0x78,0xd0,0xe2,0x74,0x5c,0x10 },
-    { 0x39,0x12,0x3e,0x7f,0x21,0xbc,0xa3,0x26,0x4e,0x6f,0x3a,0x21,0xa4,0xf1,0xb5,0x98 }
-};
 
 static void OnNodeDestroyed(DPS_Node* node, void* data)
 {
@@ -93,8 +81,8 @@ static int AddTopics(char* topicList, char** msg, int* keep, int* ttl, int* encr
                 topicList += 3;
                 break;
             case 'x':
-                if (!sscanf(topicList, "-x %d", encrypt) || (*encrypt != 0 && *encrypt != 1)) {
-                    DPS_PRINT("-x requires 1 or 0\n");
+                if (!sscanf(topicList, "-x %d", encrypt) || (*encrypt < 0) || (*encrypt > 2)) {
+                    DPS_PRINT("-x requires 0..2\n");
                     return 0;
                 }
                 topicList += 3;
@@ -108,11 +96,11 @@ static int AddTopics(char* topicList, char** msg, int* keep, int* ttl, int* encr
                 return 1;
             default:
                 DPS_PRINT("Send one publication.\n");
-                DPS_PRINT("  [topic1 ... topicN  [-x 0/1]] [-t <ttl>] [-m message]\n");
+                DPS_PRINT("  [topic1 ... topicN  [-x 0|1|2]] [-t <ttl>] [-m message]\n");
                 DPS_PRINT("        -h: Print this message\n");
                 DPS_PRINT("        -t: Set ttl on the publication\n");
-                DPS_PRINT("        -x: Enable or disable encryption for this publication.\n\n");
-                DPS_PRINT("        -m: Everything after the -m is the payload for the publication.\n\n");
+                DPS_PRINT("        -x: Disable (0) or enable symmetric (1) or asymmetric(2) encryption. Default is symmetric encryption enabled.\n");
+                DPS_PRINT("        -m: Everything after the -m is the payload for the publication.\n");
                 DPS_PRINT("  If there are no topic strings sends previous publication with a new sequence number\n");
                 return 0;
             }
@@ -139,7 +127,8 @@ static int AddTopics(char* topicList, char** msg, int* keep, int* ttl, int* encr
 
 static void OnAck(DPS_Publication* pub, uint8_t* data, size_t len)
 {
-    DPS_PRINT("Ack for pub UUID %s(%d)\n", DPS_UUIDToString(DPS_PublicationGetUUID(pub)), DPS_PublicationGetSequenceNum(pub));
+    DPS_PRINT("Ack for pub UUID %s(%d) [%s]\n", DPS_UUIDToString(DPS_PublicationGetUUID(pub)),
+              DPS_PublicationGetSequenceNum(pub), KeyIdToString(DPS_AckGetSenderKeyId(pub)));
     if (len) {
         DPS_PRINT("    %.*s\n", (int)len, data);
     }
@@ -151,7 +140,7 @@ static void ReadStdin(DPS_Node* node)
 
     while (fgets(lineBuf, sizeof(lineBuf), stdin) != NULL) {
         size_t len = strnlen(lineBuf, sizeof(lineBuf));
-        int ttl;
+        int ttl = 0;
         int keep;
         int encrypt;
         char* msg = NULL;
@@ -178,15 +167,28 @@ static void ReadStdin(DPS_Node* node)
         if (!keep) {
             DPS_DestroyPublication(currentPub);
             currentPub = DPS_CreatePublication(node);
-            ret = DPS_InitPublication(currentPub, (const char**)topics, numTopics, DPS_FALSE, encrypt ? &keyId[1] : NULL, requestAck ? OnAck : NULL);
+            ret = DPS_InitPublication(currentPub, (const char**)topics, numTopics, DPS_FALSE,
+                                      NULL, requestAck ? OnAck : NULL);
             if (ret != DPS_OK) {
-                DPS_ERRPRINT("Failed to create publication - error=%d\n", ret);
+                DPS_ERRPRINT("Failed to create publication - error=%s\n", DPS_ErrTxt(ret));
+                break;
+            }
+            if (encrypt == 2)  {
+                ret = DPS_PublicationAddSubId(currentPub, &SubscriberId);
+            } else if (encrypt == 1) {
+                ret = DPS_PublicationAddSubId(currentPub, &PskId[1]);
+            } else {
+                ret = DPS_OK;
+            }
+            if (ret != DPS_OK) {
+                DPS_ERRPRINT("Failed to add key ID - error=%s\n", DPS_ErrTxt(ret));
                 break;
             }
         }
-        ret = DPS_Publish(currentPub, msg, msg ? strnlen(msg, MAX_MSG_LEN) : 0, ttl);
+        ret = DPS_Publish(currentPub, (uint8_t*)msg, msg ? strnlen(msg, MAX_MSG_LEN) : 0, ttl);
         if (ret == DPS_OK) {
-            DPS_PRINT("Pub UUID %s(%d)\n", DPS_UUIDToString(DPS_PublicationGetUUID(currentPub)), DPS_PublicationGetSequenceNum(currentPub));
+            DPS_PRINT("Pub UUID %s(%d)\n", DPS_UUIDToString(DPS_PublicationGetUUID(currentPub)),
+                      DPS_PublicationGetSequenceNum(currentPub));
         } else {
             DPS_ERRPRINT("Failed to publish %s error=%s\n", lineBuf, DPS_ErrTxt(ret));
             break;
@@ -226,7 +228,7 @@ int main(int argc, char** argv)
 {
     DPS_Status ret;
     DPS_MemoryKeyStore* memoryKeyStore = NULL;
-    const DPS_UUID* nodeKeyId = NULL;
+    const DPS_KeyId* nodeKeyId = NULL;
     DPS_Node* node;
     char** arg = argv + 1;
     const char* host = NULL;
@@ -234,7 +236,7 @@ int main(int argc, char** argv)
     const char* linkHosts[MAX_LINKS];
     int numLinks = 0;
     int wait = 0;
-    int encrypt = DPS_TRUE;
+    int encrypt = 1;
     int ttl = 0;
     int subsRate = DPS_SUBSCRIPTION_UPDATE_RATE;
     int i;
@@ -279,7 +281,7 @@ int main(int argc, char** argv)
         if (IntArg("-r", &arg, &argc, &subsRate, 0, INT32_MAX)) {
             continue;
         }
-        if (IntArg("-x", &arg, &argc, &encrypt, 0, 1)) {
+        if (IntArg("-x", &arg, &argc, &encrypt, 0, 2)) {
             continue;
         }
         if (strcmp(*arg, "-a") == 0) {
@@ -309,13 +311,17 @@ int main(int argc, char** argv)
         addr = DPS_CreateAddress();
     }
 
-    if (encrypt) {
-        memoryKeyStore = DPS_CreateMemoryKeyStore();
+    memoryKeyStore = DPS_CreateMemoryKeyStore();
+    DPS_SetNetworkKey(memoryKeyStore, &NetworkKeyId, &NetworkKey);
+    if (encrypt == 1) {
         for (size_t i = 0; i < NUM_KEYS; ++i) {
-            DPS_SetContentKey(memoryKeyStore, &keyId[i], keyData[i], 16);
+            DPS_SetContentKey(memoryKeyStore, &PskId[i], &Psk[i]);
         }
-        nodeKeyId = &keyId[0];
-        DPS_SetNetworkKey(memoryKeyStore, "test", 4);
+    } else if (encrypt == 2) {
+        DPS_SetTrustedCA(memoryKeyStore, TrustedCAs);
+        nodeKeyId = &PublisherId;
+        DPS_SetCertificate(memoryKeyStore, PublisherCert, PublisherPrivateKey, PublisherPassword);
+        DPS_SetCertificate(memoryKeyStore, SubscriberCert, NULL, NULL);
     }
 
     node = DPS_CreateNode("/.", DPS_MemoryKeyStoreHandle(memoryKeyStore), nodeKeyId);
@@ -339,9 +345,19 @@ int main(int argc, char** argv)
     if (numTopics) {
         currentPub = DPS_CreatePublication(node);
 
-        ret = DPS_InitPublication(currentPub, (const char**)topics, numTopics, DPS_FALSE, encrypt ? &keyId[1] : NULL, requestAck ? OnAck : NULL);
+        ret = DPS_InitPublication(currentPub, (const char**)topics, numTopics, DPS_FALSE,
+                                  NULL, requestAck ? OnAck : NULL);
         if (ret != DPS_OK) {
             DPS_ERRPRINT("Failed to create publication - error=%s\n", DPS_ErrTxt(ret));
+            return 1;
+        }
+        if (encrypt == 2)  {
+            ret = DPS_PublicationAddSubId(currentPub, &SubscriberId);
+        } else if (encrypt == 1) {
+            ret = DPS_PublicationAddSubId(currentPub, &PskId[1]);
+        }
+        if (ret != DPS_OK) {
+            DPS_ERRPRINT("Failed to add key ID - error=%s\n", DPS_ErrTxt(ret));
             return 1;
         }
 
@@ -352,18 +368,18 @@ int main(int argc, char** argv)
             DPS_TimedWaitForEvent(nodeDestroyed, wait * 1000);
         }
 
-        ret = DPS_Publish(currentPub, msg, msg ? strnlen(msg, MAX_MSG_LEN) + 1 : 0, ttl);
+        ret = DPS_Publish(currentPub, (uint8_t*)msg, msg ? strnlen(msg, MAX_MSG_LEN) + 1 : 0, ttl);
         if (ret == DPS_OK) {
             DPS_PRINT("Pub UUID %s\n", DPS_UUIDToString(DPS_PublicationGetUUID(currentPub)));
         } else {
             DPS_ERRPRINT("Failed to publish topics - error=%s\n", DPS_ErrTxt(ret));
         }
+        /*
+         * A brief delay before exiting to ensure the publication
+         * gets sent and we have a chance to receive acks if requested
+         */
+        DPS_TimedWaitForEvent(nodeDestroyed, requestAck ? 2000 : 500);
         if (addr) {
-            /*
-             * A brief delay before exiting to ensure the publication
-             * gets sent and we have a chance to receive acks if requested
-             */
-            DPS_TimedWaitForEvent(nodeDestroyed, requestAck ? 2000 : 500);
             DPS_UnlinkFrom(node, addr);
             DPS_DestroyAddress(addr);
         }
@@ -382,17 +398,17 @@ int main(int argc, char** argv)
     return 0;
 
 Usage:
-    DPS_PRINT("Usage %s [-d] [-x 0/1] [-a] [-w <seconds>] <seconds>] [-t <ttl>] [[-h <hostname>] -p <portnum>] [-l <portnum>] [-m <message>] [-r <milliseconds>] [topic1 topic2 ... topicN]\n", argv[0]);
+    DPS_PRINT("Usage %s [-d] [-x 0|1|2] [-a] [-w <seconds>] <seconds>] [-t <ttl>] [[-h <hostname>] -p <portnum>] [-l <portnum>] [-m <message>] [-r <milliseconds>] [topic1 topic2 ... topicN]\n", argv[0]);
     DPS_PRINT("       -d: Enable debug ouput if built for debug.\n");
-    DPS_PRINT("       -x: Enable or disable encryption. Default is encryption enabled.\n");
+    DPS_PRINT("       -x: Disable (0) or enable symmetric (1) or asymmetric(2) encryption. Default is symmetric encryption enabled.\n");
     DPS_PRINT("       -a: Request an acknowledgement\n");
     DPS_PRINT("       -t: Set a time-to-live on a publication\n");
     DPS_PRINT("       -w: Time to wait between linking to remote node and sending publication\n");
     DPS_PRINT("       -l: Port number to listen on for incoming connections\n");
     DPS_PRINT("       -h: Specifies host (localhost is default). Mutiple -h options are permitted.\n");
     DPS_PRINT("       -p: port to link. Multiple -p options are permitted.\n");
-    DPS_PRINT("       -m: A payload message to accompany the publication.\n\n");
-    DPS_PRINT("       -r: Time to delay between subscription updates.\n\n");
+    DPS_PRINT("       -m: A payload message to accompany the publication.\n");
+    DPS_PRINT("       -r: Time to delay between subscription updates.\n");
     DPS_PRINT("           Enters interactive mode if there are no topic strings on the command line.\n");
     DPS_PRINT("           In interactive mode type -h for commands.\n");
     return 1;

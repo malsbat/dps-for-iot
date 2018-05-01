@@ -23,8 +23,17 @@
 #ifndef _UV_EXTRA_H
 #define _UV_EXTRA_H
 
+#include <safe_lib.h>
 #include <uv.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int uv_thread_detach(uv_thread_t* tid);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

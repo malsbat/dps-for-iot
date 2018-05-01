@@ -20,10 +20,17 @@
  *-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
  */
 
+/* These must be included in this order before uv.h */
+#include <safe_lib.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2ipdef.h>
+#include <mstcpip.h>
+#endif
+
 #include <assert.h>
 #include <string.h>
 #include <malloc.h>
-#include <uv.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
 #include <dps/private/network.h>
@@ -45,13 +52,13 @@ const char* DPS_NetAddrText(const struct sockaddr* addr)
             ret = uv_ip6_name((const struct sockaddr_in6*)addr, name, sizeof(name));
             port = ((const struct sockaddr_in6*)addr)->sin6_port;
             if (strcmp(name, "::ffff:127.0.0.1") == 0 || strcmp(name, "::1") == 0) {
-                strncpy(name, "<localhost>", sizeof(name));
+                strncpy_s(name, INET6_ADDRSTRLEN, "<localhost>", sizeof(name));
             }
         } else {
             ret = uv_ip4_name((const struct sockaddr_in*)addr, name, sizeof(name));
             port = ((const struct sockaddr_in*)addr)->sin_port;
             if (strcmp(name, "127.0.0.1") == 0) {
-                strncpy(name, "<localhost>", sizeof(name));
+                strncpy_s(name, INET6_ADDRSTRLEN, "<localhost>", sizeof(name));
             }
         }
         if (ret) {
@@ -70,37 +77,39 @@ const char* DPS_NetAddrText(const struct sockaddr* addr)
 
 static const uint8_t IP4as6[16] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0, 0 };
 
-int DPS_SameAddr(DPS_NodeAddress* addr1, DPS_NodeAddress* addr2)
+int DPS_SameAddr(const DPS_NodeAddress* addr1, const DPS_NodeAddress* addr2)
 {
-    struct sockaddr* a = (struct sockaddr*)&addr1->inaddr;
-    struct sockaddr* b = (struct sockaddr*)&addr2->inaddr;
+    const struct sockaddr* a = (const struct sockaddr*)&addr1->inaddr;
+    const struct sockaddr* b = (const struct sockaddr*)&addr2->inaddr;
     struct sockaddr_in6 tmp;
 
     if (a->sa_family != b->sa_family) {
         uint32_t ip;
         if (a->sa_family == AF_INET6) {
-            struct sockaddr_in* ipb = (struct sockaddr_in*)b;
+            const struct sockaddr_in* ipb = (const struct sockaddr_in*)b;
             ip = ipb->sin_addr.s_addr;
             tmp.sin6_port = ipb->sin_port;
-            b = (struct sockaddr*)&tmp;
+            b = (const struct sockaddr*)&tmp;
         } else {
-            struct sockaddr_in* ipa = (struct sockaddr_in*)a;
+            const struct sockaddr_in* ipa = (const struct sockaddr_in*)a;
             ip = ipa->sin_addr.s_addr;
             tmp.sin6_port = ipa->sin_port;
-            a = (struct sockaddr*)&tmp;
+            a = (const struct sockaddr*)&tmp;
         }
         memcpy_s(&tmp.sin6_addr, sizeof(tmp.sin6_addr), IP4as6, 12);
         memcpy_s((uint8_t*)&tmp.sin6_addr + 12, sizeof(tmp.sin6_addr) - 12, &ip, 4);
         tmp.sin6_family = AF_INET6;
     }
-    if (a->sa_family == AF_INET6) {
-        struct sockaddr_in6* ip6a = (struct sockaddr_in6*)a;
-        struct sockaddr_in6* ip6b = (struct sockaddr_in6*)b;
+    if (a->sa_family == AF_INET6 && b->sa_family == AF_INET6) {
+        const struct sockaddr_in6* ip6a = (const struct sockaddr_in6*)a;
+        const struct sockaddr_in6* ip6b = (const struct sockaddr_in6*)b;
         return (ip6a->sin6_port == ip6b->sin6_port) && (memcmp(&ip6a->sin6_addr, &ip6b->sin6_addr, 16) == 0);
-    } else {
-        struct sockaddr_in* ipa = (struct sockaddr_in*)a;
-        struct sockaddr_in* ipb = (struct sockaddr_in*)b;
+    } else if (a->sa_family == AF_INET && b->sa_family == AF_INET) {
+        const struct sockaddr_in* ipa = (const struct sockaddr_in*)a;
+        const struct sockaddr_in* ipb = (const struct sockaddr_in*)b;
         return (ipa->sin_port == ipb->sin_port) && (ipa->sin_addr.s_addr == ipb->sin_addr.s_addr);
+    } else {
+        return DPS_FALSE;
     }
 }
 
@@ -137,4 +146,20 @@ void DPS_NetFreeBufs(uv_buf_t* bufs, size_t numBufs)
         }
         ++bufs;
     }
+}
+
+void DPS_MapAddrToV6(struct sockaddr* addr)
+{
+#ifdef _WIN32
+    /* Windows requires that v4 addresses are mapped to v6 addresses for dual stack sockets */
+    if (addr->sa_family == AF_INET) {
+        struct in_addr inaddr = *(struct in_addr*)INETADDR_ADDRESS(addr);
+        SCOPE_ID scope = INETADDR_SCOPE_ID(addr);
+        USHORT port = INETADDR_PORT(addr);
+        memset(addr, 0, sizeof(struct sockaddr_storage));
+        IN6ADDR_SETV4MAPPED((struct sockaddr_in6 *)addr, &inaddr, scope, port);
+    }
+#else
+    /* Linux does not require mapping v4 addresses to v6 addresses for dual stack sockets */
+#endif
 }

@@ -48,10 +48,16 @@ static int ParseOpt(const uint8_t* buf, size_t bufLen, int prevOpt, CoAP_Option*
     if (dFlag < 13) {
         opt->id = prevOpt + dFlag;
     } else if (dFlag == 13) {
+        if (bufLen < 1) {
+            return -1;
+        }
         opt->id = 13 + prevOpt + buf[0];
         buf += 1;
         bufLen -= 1;
     } else {
+        if (bufLen < 2) {
+            return -1;
+        }
         opt->id = 269 + prevOpt + (buf[0] << 8) + buf[1];
         buf += 2;
         bufLen -= 2;
@@ -59,17 +65,17 @@ static int ParseOpt(const uint8_t* buf, size_t bufLen, int prevOpt, CoAP_Option*
     if (lFlag < 13) {
         opt->len = lFlag;
     } else if (lFlag == 13) {
-        opt->len = 13 + buf[0];
         if (bufLen < 1) {
             return -1;
         }
+        opt->len = 13 + buf[0];
         buf += 1;
         bufLen -= 1;
     } else {
-        opt->len = 269 + (buf[0] << 8) + buf[1];
         if (bufLen < 2) {
             return -1;
         }
+        opt->len = 269 + (buf[0] << 8) + buf[1];
         buf += 2;
         bufLen -= 2;
     }
@@ -80,43 +86,6 @@ static int ParseOpt(const uint8_t* buf, size_t bufLen, int prevOpt, CoAP_Option*
     return (int)(opt->len + (buf - head));
 }
 
-static size_t ParseLengthsTCP(const uint8_t* buffer, size_t* extLen, size_t* tokLen)
-{
-    uint8_t l = buffer[0] >> 4;
-
-    *tokLen = buffer[0] & 0x0F;
-    if (l == 13) {
-        *extLen = 13 + buffer[1];
-        return 2;
-    }
-    if (l == 14) {
-        *extLen = 269 + (buffer[1] << 8 | buffer[2]);
-        return 3;
-    }
-    if (l == 15) {
-        *extLen = 65805ul + (uint32_t)(buffer[1] << 24 | buffer[2] << 16 | buffer[3] << 8 | buffer[4]);
-        return 4;
-    }
-    *extLen = l;
-    return 1;
-}
-
-DPS_Status CoAP_GetPktLen(int protocol, const uint8_t* buffer, size_t bufLen, size_t* pktLen)
-{
-    if (bufLen < 5) {
-        return DPS_ERR_EOD;
-    }
-    if (protocol == COAP_OVER_UDP) {
-        *pktLen = bufLen;
-    } else {
-        size_t tokLen;
-        size_t extLen;
-        size_t lenLen = ParseLengthsTCP(buffer, &extLen, &tokLen);
-        *pktLen = lenLen + extLen + tokLen + 1;
-    }
-    return DPS_OK;
-}
-
 void CoAP_Free(CoAP_Parsed* coap)
 {
     if (coap) {
@@ -124,7 +93,7 @@ void CoAP_Free(CoAP_Parsed* coap)
     }
 }
 
-DPS_Status CoAP_Parse(int protocol, const uint8_t* buffer, size_t bufLen, CoAP_Parsed* coap, DPS_RxBuffer* payload)
+DPS_Status CoAP_Parse(const uint8_t* buffer, size_t bufLen, CoAP_Parsed* coap, DPS_RxBuffer* payload)
 {
     const uint8_t* p;
     size_t len;
@@ -133,25 +102,15 @@ DPS_Status CoAP_Parse(int protocol, const uint8_t* buffer, size_t bufLen, CoAP_P
     if (bufLen < 5) {
         return DPS_ERR_RESOURCES;
     }
-    if (protocol == COAP_OVER_UDP) {
-        coap->version = buffer[0] >> 6;
-        coap->type = buffer[0] >> 4 & 0x3;
-        coap->tokenLen = buffer[0] & 0xF;
-        coap->code = buffer[1];
-        coap->msgId = buffer[2] << 8 | buffer[3];
-        bufLen -= 4;
-        buffer += 4;
-    } else {
-        size_t extLen;
-        size_t lenLen = ParseLengthsTCP(buffer, &extLen, &coap->tokenLen);
-        bufLen -= lenLen;
-        buffer += lenLen;
-        coap->version = 1;
-        coap->type = COAP_REQUEST;
-        coap->code = buffer[0];
-        coap->msgId = 0;
-        bufLen -= 1;
-        buffer += 1;
+    coap->version = buffer[0] >> 6;
+    coap->type = buffer[0] >> 4 & 0x3;
+    coap->tokenLen = buffer[0] & 0xF;
+    coap->code = buffer[1];
+    coap->msgId = buffer[2] << 8 | buffer[3];
+    bufLen -= 4;
+    buffer += 4;
+    if (bufLen < coap->tokenLen) {
+        return DPS_ERR_INVALID;
     }
     if (coap->tokenLen) {
         if (memcpy_s(coap->token, sizeof(coap->token), buffer, coap->tokenLen) != EOK) {
@@ -220,7 +179,7 @@ DPS_Status CoAP_Parse(int protocol, const uint8_t* buffer, size_t bufLen, CoAP_P
     return DPS_OK;
 }
 
-DPS_Status CoAP_Compose(int protocol, uint8_t code, const CoAP_Option* opts, size_t numOpts, size_t payloadLen, DPS_TxBuffer* buf)
+DPS_Status CoAP_Compose(uint8_t code, const CoAP_Option* opts, size_t numOpts, size_t payloadLen, DPS_TxBuffer* buf)
 {
     static uint16_t msgId = 1;
     size_t i;
@@ -265,35 +224,11 @@ DPS_Status CoAP_Compose(int protocol, uint8_t code, const CoAP_Option* opts, siz
     /*
      * Compose the header
      */
-    if (protocol == COAP_OVER_UDP) {
-        *buf->txPos++ = COAP_VERSION << 6 | (COAP_TYPE_NON_CONFIRMABLE << 4) | tokenLen;
-        *buf->txPos++ = code;
-        *buf->txPos++ = msgId >> 8;
-        *buf->txPos++ = msgId & 0xFF;
-        ++msgId;
-    } else {
-        size_t extLen = optLen + payloadLen;
-        if (extLen < 13) {
-            *buf->txPos++ = (uint8_t)(extLen << 4 | tokenLen);
-        } else if (extLen < 269) {
-            extLen -= 13;
-            *buf->txPos++ = (uint8_t)((13 << 4) | tokenLen);
-            *buf->txPos++ = (uint8_t)(extLen);
-        } else if (extLen < 65805) {
-            extLen -= 269;
-            *buf->txPos++ = (uint8_t)((14 << 4) | tokenLen);
-            *buf->txPos++ = (uint8_t)(extLen >> 8);
-            *buf->txPos++ = (uint8_t)(extLen);
-        } else {
-            extLen -= 65805;
-            *buf->txPos++ = (uint8_t)((15 << 4) | tokenLen);
-            *buf->txPos++ = (uint8_t)(extLen >> 24);
-            *buf->txPos++ = (uint8_t)(extLen >> 16);
-            *buf->txPos++ = (uint8_t)(extLen >> 8);
-            *buf->txPos++ = (uint8_t)(extLen);
-        }
-        *buf->txPos++ = code;
-    }
+    *buf->txPos++ = COAP_VERSION << 6 | (COAP_TYPE_NON_CONFIRMABLE << 4) | tokenLen;
+    *buf->txPos++ = code;
+    *buf->txPos++ = msgId >> 8;
+    *buf->txPos++ = msgId & 0xFF;
+    ++msgId;
     /*
      * Write the token if there is one
      */
@@ -341,10 +276,12 @@ DPS_Status CoAP_Compose(int protocol, uint8_t code, const CoAP_Option* opts, siz
             *buf->txPos++ = (uint8_t)(len >> 8);
             *buf->txPos++ = (uint8_t)(len & 0xFF);
         }
-        if (memcpy_s(buf->txPos, DPS_TxBufferSpace(buf), opts->val, opts->len) != EOK) {
-            return DPS_ERR_RESOURCES;
+        if (opts->val && opts->len) {
+            if (memcpy_s(buf->txPos, DPS_TxBufferSpace(buf), opts->val, opts->len) != EOK) {
+                return DPS_ERR_RESOURCES;
+            }
+            buf->txPos += opts->len;
         }
-        buf->txPos += opts->len;
         optIdLast += delta;
         ++opts;
     }
@@ -377,4 +314,33 @@ void CoAP_DumpOpt(const CoAP_Option* opt)
             DPS_DBGPRINT("Option number %d\n", opt->id);
             break;
     }
+}
+
+static const char DPS_PublicationURI[] = "dps/pub";
+static const uint8_t DPS_ContentFormat = COAP_FORMAT_APPLICATION_CBOR;
+
+DPS_Status CoAP_Wrap(uv_buf_t* bufs, size_t numBufs)
+{
+    DPS_Status ret;
+    DPS_TxBuffer coap;
+    size_t i;
+    size_t len = 0;
+    CoAP_Option opts[2];
+
+    opts[0].id = COAP_OPT_URI_PATH;
+    opts[0].val = (uint8_t*)DPS_PublicationURI;
+    opts[0].len = sizeof(DPS_PublicationURI);
+    opts[1].id = COAP_OPT_CONTENT_FORMAT;
+    opts[1].val = (uint8_t*)&DPS_ContentFormat;
+    opts[1].len = sizeof(DPS_ContentFormat);
+
+    for (i = 1; i < numBufs; ++i) {
+        len += bufs[i].len;
+    }
+    ret =  CoAP_Compose(COAP_CODE(COAP_REQUEST, COAP_PUT), opts, A_SIZEOF(opts), len, &coap);
+    if (ret == DPS_OK) {
+        bufs[0].base = (void*)coap.base;
+        bufs[0].len = DPS_TxBufferUsed(&coap);
+    }
+    return ret;
 }

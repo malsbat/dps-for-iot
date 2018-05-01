@@ -30,6 +30,7 @@
 #include <dps/uuid.h>
 #include <stdlib.h>
 #include <string.h>
+#include <safe_lib.h>
 #include <uv.h>
 #include "compat.h"
 
@@ -38,26 +39,22 @@
  */
 DPS_DEBUG_CONTROL(DPS_DEBUG_ON);
 
-static inline uint8_t BIN(char c)
-{
-    return c <= '9' ? c - '0' : 10 + c - 'a';
-}
-
 const char* DPS_UUIDToString(const DPS_UUID* uuid)
 {
     static const char* hex = "0123456789abcdef";
     static char str[38];
-    char* p = str;
+    char* dst = str;
+    const uint8_t *src = uuid->val;
     size_t i;
 
     for (i = 0; i < sizeof(uuid->val); ++i) {
         if (i == 4 || i == 6 || i == 8 || i == 10) {
-            *p++ = '-';
+            *dst++ = '-';
         }
-        *p++ = hex[uuid->val[i] >> 4];
-        *p++ = hex[uuid->val[i] & 0xF];
+        *dst++ = hex[*src >> 4];
+        *dst++ = hex[*src++ & 0xF];
     }
-    *p = 0;
+    *dst = 0;
     return str;
 }
 

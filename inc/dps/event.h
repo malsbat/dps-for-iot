@@ -1,3 +1,8 @@
+/**
+ * @file
+ * Signal and wait on application-created events
+ */
+
 /*
  *******************************************************************
  *
@@ -23,7 +28,6 @@
 #ifndef _DPS_EVENT_H
 #define _DPS_EVENT_H
 
-#include <uv.h>
 #include <dps/err.h>
 #include <dps/dps.h>
 
@@ -32,12 +36,20 @@ extern "C" {
 #endif
 
 /**
+ * @defgroup event Event
+ * Signal and wait on application-created events.
+ * @{
+ */
+
+/**
  * Opaque type for an event
  */
 typedef struct _DPS_Event DPS_Event;
 
 /**
  * Create and initialize an event
+ *
+ * @return The created event, or NULL if creation failed
  */
 DPS_Event* DPS_CreateEvent();
 
@@ -49,17 +61,19 @@ DPS_Event* DPS_CreateEvent();
 void DPS_DestroyEvent(DPS_Event* event);
 
 /**
- * Set the event application data pointer
+ * Set the event application data
  *
- * @param event   The event to set an application data pointer on
- * @param data    The data pointer to set
+ * @param event   The event to set an application data on
+ * @param data    The data to set
  */
 void DPS_SetEventData(DPS_Event* event, void* data);
 
 /**
- * Get the event application data pointer
+ * Get the event application data
  *
- * @param event   The event to get the application data pointer from
+ * @param event   The event to get the application data from
+ *
+ * @return The application data
  */
 void* DPS_GetEventData(const DPS_Event* event);
 
@@ -89,6 +103,8 @@ DPS_Status DPS_WaitForEvent(DPS_Event* event);
  * @return  The status passed to DPS_SignalEvent() or DPS_ERR_TIMEOUT if the call timed out.
  */
 DPS_Status DPS_TimedWaitForEvent(DPS_Event* event, uint16_t timeout);
+
+/** @} */
 
 #ifdef __cplusplus
 }

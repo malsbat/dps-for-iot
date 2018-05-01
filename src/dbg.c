@@ -21,11 +21,15 @@
  */
 
 #include <dps/dbg.h>
+#include <safe_lib.h>
+#include <uv.h>
 #include <stdarg.h>
 
 int DPS_Debug = 1;
 
 #define DPS_DBG_TIME   ((uint32_t)((uv_hrtime() / 1000000) & 0xFFFFFFF))
+
+static const char* LevelTxt[] = { "ERROR", "WARNING", "" /* PRINT */, "" /* PRINTT */, "TRACE", "DEBUG" };
 
 void DPS_Log(DPS_LogLevel level, const char* file, int line, const char *function, const char *fmt, ...)
 {
@@ -33,21 +37,32 @@ void DPS_Log(DPS_LogLevel level, const char* file, int line, const char *functio
     va_start(ap, fmt);
     switch (level) {
     case DPS_LOG_ERROR:
-        fprintf(stderr, "%09u:%s@%d\t ERROR! ", DPS_DBG_TIME, file, line);
+    case DPS_LOG_WARNING:
+    case DPS_LOG_DBGPRINT:
+        fprintf(stderr, "%09u %-7s %s@%d: ", DPS_DBG_TIME, LevelTxt[level], file, line);
         vfprintf(stderr, fmt, ap);
         break;
     case DPS_LOG_PRINTT:
-        fprintf(stderr, "%09u:", DPS_DBG_TIME);
+        fprintf(stderr, "%09u ", DPS_DBG_TIME);
+        /* FALLTHROUGH */
     case DPS_LOG_PRINT:
         vfprintf(stderr, fmt, ap);
         break;
     case DPS_LOG_DBGTRACE:
-        fprintf(stderr, "%09u:%s@%d\t %s()\n", DPS_DBG_TIME, file, line, function);
-        break;
-    case DPS_LOG_DBGPRINT:
-        fprintf(stderr, "%09u:%s@%d\t ", DPS_DBG_TIME, file, line);
+        fprintf(stderr, "%09u %-7s %s@%d: %s() ", DPS_DBG_TIME, LevelTxt[level], file, line, function);
         vfprintf(stderr, fmt, ap);
         break;
     }
     va_end(ap);
+}
+
+void DPS_LogBytes(DPS_LogLevel level, const char* file, int line, const char *function, const uint8_t *bytes, size_t n)
+{
+    for (size_t i = 0; i < n; ++i) {
+        if ((i % 16) == 0) {
+            fprintf(stderr, "%s%09u %-7s %s@%d: ", i ? "\n" : "", DPS_DBG_TIME, LevelTxt[level], file, line);
+        }
+        fprintf(stderr, "%02x ", bytes[i]);
+    }
+    fprintf(stderr, "\n");
 }
