@@ -18,13 +18,18 @@ env:
   - VARIANT=debug
   - VARIANT=release
 
+env:
+  - TRANSPORT=udp
+  - TRANSPORT=tcp
+  - TRANSPORT=dtls
+
+compiler:
+  - gcc
+
 before_install:
   - eval "${MATRIX_EVAL}"
   - ./.travis/install-swig.sh
   - ./.travis/install-nodejs.sh
 
 language: c
-script: scons CC=$CC CXX=$CXX UV_PATH=ext/libuv variant=$VARIANT
-
-compiler:
-  - gcc
+script: scons variant=$VARIANT transport=$TRANSPORT CC=$CC CXX=$CXX UV_PATH=ext/libuv
