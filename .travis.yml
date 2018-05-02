@@ -12,15 +12,18 @@ matrix:
             - g++-7
             - zlib1g-dev
       env:
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=debug TRANSPORT=udp
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=debug TRANSPORT=tcp
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=debug TRANSPORT=dtls
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=release TRANSPORT=udp
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=release TRANSPORT=tcp
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=release TRANSPORT=dtls
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
 
 compiler:
   - gcc
+
+env:
+  - VARIANT=debug TRANSPORT=udp
+  - VARIANT=debug TRANSPORT=tcp
+  - VARIANT=debug TRANSPORT=dtls
+  - VARIANT=release TRANSPORT=udp
+  - VARIANT=release TRANSPORT=tcp
+  - VARIANT=release TRANSPORT=dtls
 
 before_install:
   - eval "${MATRIX_EVAL}"
@@ -28,4 +31,6 @@ before_install:
   - ./.travis/install-nodejs.sh
 
 language: c
-script: scons variant=$VARIANT transport=$TRANSPORT CC=$CC CXX=$CXX UV_PATH=ext/libuv
+script:
+  - eval "${MATRIX_EVAL}"
+  - scons variant=$VARIANT transport=$TRANSPORT CC=$CC CXX=$CXX UV_PATH=ext/libuv
