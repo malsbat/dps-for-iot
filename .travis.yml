@@ -10,7 +10,7 @@ matrix:
           packages:
             - doxygen
             - g++-7
-            - libuv-dev
+            - swig
             - swig3.0
       env:
          - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
