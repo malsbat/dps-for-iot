@@ -12,16 +12,12 @@ matrix:
             - g++-7
             - zlib1g-dev
       env:
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
-
-env:
-  - VARIANT=debug
-  - VARIANT=release
-
-env:
-  - TRANSPORT=udp
-  - TRANSPORT=tcp
-  - TRANSPORT=dtls
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=debug TRANSPORT=udp
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=debug TRANSPORT=tcp
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=debug TRANSPORT=dtls
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=release TRANSPORT=udp
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=release TRANSPORT=tcp
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7" VARIANT=release TRANSPORT=dtls
 
 compiler:
   - gcc
