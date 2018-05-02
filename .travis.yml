@@ -6,6 +6,7 @@ matrix:
           sources:
             - ubuntu-toolchain-r-test
           packages:
+            - doxygen
             - g++-7
             - libuv-dev
             - swig
@@ -14,6 +15,7 @@ matrix:
 
 before_install:
   - eval "${MATRIX_EVAL}"
+  - ./install_libuv.sh
 
 # Dependency Management
 # install: make get-deps
