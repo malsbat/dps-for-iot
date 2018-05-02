@@ -17,14 +17,13 @@ matrix:
 
 before_install:
   - eval "${MATRIX_EVAL}"
-  - ./install-libuv.sh
 
 # Dependency Management
 # install: make get-deps
 
 # Default Build Script
 language: c
-script: scons CC=$CC CXX=$CXX
+script: scons CC=$CC CXX=$CXX UV_PATH=ext/libuv
 
 # Choosing compilers to test against
 compiler:
