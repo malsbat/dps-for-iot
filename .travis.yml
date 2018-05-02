@@ -8,31 +8,19 @@ matrix:
           sources:
             - ubuntu-toolchain-r-test
           packages:
-            - autoconf
-            - automake
-            - bison
             - doxygen
             - g++-7
-            - libpcre3-dev
             - zlib1g-dev
       env:
          - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
 
 before_install:
   - eval "${MATRIX_EVAL}"
-  - ./install-swig.sh
-  - ./install-nodejs.sh
+  - ./.travis/install-swig.sh
+  - ./.travis/install-nodejs.sh
 
-# Dependency Management
-# install: make get-deps
-
-# Default Build Script
 language: c
 script: scons CC=$CC CXX=$CXX UV_PATH=ext/libuv
 
-# Choosing compilers to test against
 compiler:
-#  - clang
   - gcc
-
-# Build Matrix - env and compiler can be given as arrays to construct a build matrix.
