@@ -14,13 +14,17 @@ matrix:
       env:
          - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
 
+env:
+  - VARIANT=debug
+  - VARIANT=release
+
 before_install:
   - eval "${MATRIX_EVAL}"
   - ./.travis/install-swig.sh
   - ./.travis/install-nodejs.sh
 
 language: c
-script: scons CC=$CC CXX=$CXX UV_PATH=ext/libuv
+script: scons CC=$CC CXX=$CXX UV_PATH=ext/libuv variant=$VARIANT
 
 compiler:
   - gcc
