@@ -10,10 +10,9 @@ matrix:
           packages:
             - doxygen
             - g++-7
-            - swig
             - swig3.0
       env:
-         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7"
+         - MATRIX_EVAL="CC=gcc-7 && CXX=g++-7 && SWIG=swig3.0"
 
 before_install:
   - eval "${MATRIX_EVAL}"
@@ -23,7 +22,7 @@ before_install:
 
 # Default Build Script
 language: c
-script: scons CC=$CC CXX=$CXX UV_PATH=ext/libuv
+script: scons CC=$CC CXX=$CXX SWIG=$SWIG UV_PATH=ext/libuv
 
 # Choosing compilers to test against
 compiler:
