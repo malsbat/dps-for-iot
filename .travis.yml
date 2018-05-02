@@ -18,12 +18,12 @@ compiler:
   - gcc
 
 env:
-  - VARIANT=debug TRANSPORT=udp
-  - VARIANT=debug TRANSPORT=tcp
-  - VARIANT=debug TRANSPORT=dtls
-  - VARIANT=release TRANSPORT=udp
-  - VARIANT=release TRANSPORT=tcp
-  - VARIANT=release TRANSPORT=dtls
+  - ${MATRIX_EVAL} VARIANT=debug TRANSPORT=udp
+  - ${MATRIX_EVAL} VARIANT=debug TRANSPORT=tcp
+  - ${MATRIX_EVAL} VARIANT=debug TRANSPORT=dtls
+  - ${MATRIX_EVAL} VARIANT=release TRANSPORT=udp
+  - ${MATRIX_EVAL} VARIANT=release TRANSPORT=tcp
+  - ${MATRIX_EVAL} VARIANT=release TRANSPORT=dtls
 
 before_install:
   - eval "${MATRIX_EVAL}"
@@ -31,6 +31,6 @@ before_install:
   - ./.travis/install-nodejs.sh
 
 language: c
+
 script:
-  - eval "${MATRIX_EVAL}"
   - scons variant=$VARIANT transport=$TRANSPORT CC=$CC CXX=$CXX UV_PATH=ext/libuv
