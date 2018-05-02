@@ -12,14 +12,14 @@ vars.AddVariables(
     EnumVariable('target', 'Build target', default='local', allowed_values=('local', 'yocto'), ignorecase=2),
     ListVariable('bindings', 'Bindings to build', bindings, bindings),
     ('CC', 'C compiler to use'),
-    ('CXX', 'C++ compiler to use'))
+    ('CXX', 'C++ compiler to use'),
+    ('SWIG', 'Path to SWIG executable'))
 
 # Windows-specific command line variables
 if platform.system() == 'Windows':
     vars.AddVariables(
         PathVariable('UV_PATH', 'Path where libuv is installed', 'ext\libuv', PathVariable.PathAccept),
         PathVariable('PYTHON_PATH', 'Path to Python', 'C:\Python27', PathVariable.PathAccept),
-        PathVariable('SWIG', 'Path to SWIG executable', 'C:\swigwin-3.0.10\swig.exe', PathVariable.PathAccept),
         PathVariable('DOXYGEN_PATH', 'Path to Doxygen', 'C:\Program Files\Doxygen', PathVariable.PathAccept))
 
 # Linux-specific command line variables
