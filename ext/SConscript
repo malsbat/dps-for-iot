@@ -140,7 +140,7 @@ if extEnv['UV_PATH'] == os.path.join('ext', 'libuv'):
    elif uvEnv['PLATFORM'] == 'posix':
       uvgyp = uvEnv.Command('./libuv/out/Makefile', uvgit,
                             ['patch -p1 < ../libuv.patch',
-                             'gyp_uv.py -f make'],
+                             './gyp_uv.py -f make'],
                             chdir = 'ext/libuv')
       uvlib = uvEnv.Make(source = './libuv/out/Makefile',
                          target = ['libuv/out/Release/libuv.a'],
