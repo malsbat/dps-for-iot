@@ -15,7 +15,7 @@ matrix:
 
 before_install:
   - eval "${MATRIX_EVAL}"
-  - ./install_libuv.sh
+  - ./install-libuv.sh
 
 # Dependency Management
 # install: make get-deps
