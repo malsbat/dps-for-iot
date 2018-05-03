@@ -1,6 +1,7 @@
 # Distributed Publish & Subscribe for IoT
 
 [![Build Status](https://travis-ci.org/malsbat/dps-for-iot.svg?branch=master)](https://travis-ci.org/malsbat/dps-for-iot)
+[![Build Status](https://ci.appveyor.com/api/projects/status/github/malsbat/dps-for-iot?svg=true)](https://ci.appveyor.com/project/malsbat/dps-for-iot)
 
 ***
 
