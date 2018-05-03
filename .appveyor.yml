@@ -12,4 +12,4 @@ install:
 
 build_script:
 - cd C:\projects\dps-for-iot
-- scons
+- scons SWIG=swig
