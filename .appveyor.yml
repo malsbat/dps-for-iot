@@ -4,6 +4,7 @@ image:
 - Visual Studio 2017
 
 install:
+- cinst swig
 - curl -L http://prdownloads.sourceforge.net/scons/scons-3.0.1.zip --output scons-3.0.1.zip
 - 7z x scons-3.0.1.zip
 - cd scons-3.0.1
