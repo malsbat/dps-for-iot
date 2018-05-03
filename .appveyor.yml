@@ -6,9 +6,9 @@ image:
 install:
 - curl -L http://prdownloads.sourceforge.net/scons/scons-3.0.1.zip --output scons-3.0.1.zip
 - 7z x scons-3.0.1.zip
-- pushd scons-3.0.1
+- cd scons-3.0.1
 - python setup.py install
-- popd
 
 build_script:
+- cd C:\projects\dps-for-iot
 - scons
