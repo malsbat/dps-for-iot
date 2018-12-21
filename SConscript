@@ -1,10 +1,10 @@
 import os
 import string
-Import(['env', 'ext_libs', 'version'])
+Import(['env', 'ext_libs', 'extUV', 'version'])
 
 platform = env['PLATFORM']
 
-env['UV_LIBS'].append(ext_libs)
+env['DPS_LIBS'] = [ext_libs] + env['DPS_LIBS']
 
 # Additional warning for the lib object files
 
@@ -13,13 +13,14 @@ libenv = env.Clone()
 
 libenv.Append(CPPDEFINES = ['MBEDTLS_USER_CONFIG_FILE=\\"mbedtls_config.h\\"'])
 libenv.Append(CPPPATH = ['#/ext/safestring/include', '#/ext', '#/ext/mbedtls/include'])
+if extUV: libenv.Append(CPPPATH = ['#/ext/libuv/include'])
 
 # Additional warnings for the core object files
 if platform == 'win32':
-    # We are getting our secure memory and string functions for
+    # We are getting our secure memory and string functions from
     # SafeStringLib so need to disable the Windows supplied versions
     libenv.Append(CPPDEFINES = ['__STDC_WANT_SECURE_LIB__=0'])
-    libenv.Append(LIBS = env['UV_LIBS'])
+    libenv.Append(LIBS = env['DPS_LIBS'])
 elif platform == 'posix':
     libenv.Append(CCFLAGS = ['-Wall', '-Wno-format-extra-args'])
 
@@ -42,6 +43,7 @@ srcs = ['src/bitvec.c',
         'src/err.c',
         'src/event.c',
         'src/history.c',
+        'src/json.c',
         'src/keystore.c',
         'src/synchronous.c',
         'src/uuid.c',
@@ -79,9 +81,10 @@ libenv.Install('#/build/dist/lib', lib)
 
 shobjs = libenv.SharedObject(srcs)
 if platform == 'win32':
-    shlib = libenv.SharedLibrary('lib/dps_shared', shobjs + ['dps_shared.def'], SHLIBVERSION = version)
+    print(env['DEF_FILE'])
+    shlib = libenv.SharedLibrary('lib/dps_shared', shobjs + [env['DEF_FILE']], LIBS = env['DPS_LIBS'], SHLIBVERSION = version)
 else:
-    shlib = libenv.SharedLibrary('lib/dps_shared', shobjs, SHLIBVERSION = version)
+    shlib = libenv.SharedLibrary('lib/dps_shared', shobjs, LIBS = env['DPS_LIBS'], SHLIBVERSION = version)
 libenv.InstallVersionedLib('#/build/dist/lib', shlib, SHLIBVERSION = version)
 
 ns3srcs = ['src/bitvec.c',
@@ -111,7 +114,7 @@ if env['python']:
     pyenv.VariantDir('swig/py', 'swig')
     pyenv.Append(LIBPATH = env['PY_LIBPATH'])
     pyenv.Append(CPPPATH = env['PY_CPPPATH'])
-    pyenv.Append(LIBS = [lib, env['UV_LIBS']])
+    pyenv.Append(LIBS = [lib, env['DPS_LIBS']])
     # Documentation is only available which Doxygen is installed
     try:
         if pyenv.Doxygen:
@@ -125,6 +128,8 @@ if env['python']:
         pyenv.Append(CCFLAGS = ['/EHsc'])
         # Ignore warnings in generated code
         pyenv.Append(CCFLAGS = ['/wd4244'])
+    elif platform == 'posix':
+        pyenv.Append(CCFLAGS = ['-Wno-deprecated-register'])
 
     pyenv.Append(SWIGFLAGS = ['-python', '-c++', '-Wextra', '-Werror', '-v', '-O'], SWIGPATH = ['#/inc', './swig/py'])
     pyenv.Append(CPPPATH = ['swig', 'swig/py'])
@@ -148,7 +153,7 @@ if env['nodejs'] and platform == 'posix':
         nodeenv.Append(CPPPATH = [os.getenv('SYSROOT') + '/usr/include/node'])
     else:
         nodeenv.Append(CPPPATH = ['/usr/include/node'])
-    nodeenv.Append(LIBS = [lib, env['UV_LIBS']])
+    nodeenv.Append(LIBS = [lib, env['DPS_LIBS']])
     nodeobjs = nodeenv.SharedObject(['swig/js/dps.i'])
     nodedps = nodeenv.SharedLibrary('lib/nodedps', shobjs + nodeobjs)
     nodeenv.InstallAs('#/build/dist/js/dps.node', nodedps)
@@ -160,7 +165,8 @@ testenv = env.Clone()
 if testenv['PLATFORM'] == 'win32':
     testenv.Append(CPPDEFINES = ['_CRT_SECURE_NO_WARNINGS', '__STDC_WANT_SECURE_LIB__=0'])
 testenv.Append(CPPPATH = ['#/ext/safestring/include', 'src'])
-testenv.Append(LIBS = [lib, env['UV_LIBS']])
+if extUV: testenv.Append(CPPPATH = ['#/ext/libuv/include'])
+testenv.Append(LIBS = [lib, env['DPS_LIBS']])
 
 testsrcs = ['test/hist_unit.c',
             'test/make_mesh.c',
@@ -172,9 +178,9 @@ testsrcs = ['test/hist_unit.c',
             'test/packtest.c',
             'test/cbortest.c',
             'test/cosetest.c',
+            'test/jsontest.c',
             'test/version.c',
-            'test/keystoretest.c',
-            'test/publish.c']
+            'test/keystoretest.c']
 
 Depends(testsrcs, ext_libs)
 
@@ -182,7 +188,12 @@ testprogs = []
 for test in testsrcs:
     testprogs.append(testenv.Program(test))
 
-testprogs.append(testenv.Program(['test/node.c', 'test/keys.c']))
+testsrcs = ['test/link.c',
+            'test/node.c',
+            'test/publish.c']
+
+for test in testsrcs:
+    testprogs.append(testenv.Program([test, 'test/keys.c']))
 
 testenv.Install('#/build/test/bin', testprogs)
 
@@ -190,8 +201,10 @@ testenv.Install('#/build/test/bin', testprogs)
 if platform == 'posix' and env['fsan'] == True:
     fenv = env.Clone()
     fenv.VariantDir('test/fuzzer', 'test')
+    fenv.Append(CPPPATH = ['#/ext/safestring/include'])
+    if extUV: fenv.Append(CPPPATH = ['#/ext/libuv/include'])
     fenv.Append(LINKFLAGS = ['-fsanitize=fuzzer'])
-    fenv.Append(LIBS = [lib, env['UV_LIBS']])
+    fenv.Append(LIBS = [lib, env['DPS_LIBS']])
 
     fsrcs = ['test/fuzzer/cbor_fuzzer.c']
     if env['transport'] == 'dtls':
@@ -212,7 +225,7 @@ if platform == 'posix' and env['fsan'] == True:
 exampleenv = env.Clone()
 if exampleenv['PLATFORM'] == 'win32':
     exampleenv.Append(CPPDEFINES = ['_CRT_SECURE_NO_WARNINGS'])
-exampleenv.Append(LIBS = [lib, env['UV_LIBS']])
+exampleenv.Append(LIBS = [lib, env['DPS_LIBS']])
 
 examplesrcs = ['examples/pub_many.c',
                'examples/publisher.c',
@@ -233,7 +246,7 @@ exampleenv.Install('#/build/dist/bin', exampleprogs)
 tutorialenv = env.Clone()
 if tutorialenv['PLATFORM'] == 'win32':
     tutorialenv.Append(CPPDEFINES = ['_CRT_SECURE_NO_WARNINGS'])
-tutorialenv.Append(LIBS = [lib, env['UV_LIBS']])
+tutorialenv.Append(LIBS = [lib, env['DPS_LIBS']])
 
 tutorialsrcs = ['doc/tutorial/tutorial.c']
 
@@ -255,3 +268,7 @@ try:
 except:
     # Doxygen may not be installed
     pass
+
+# Return the static DPS library
+result = [lib]
+Return('result')

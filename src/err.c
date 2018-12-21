@@ -57,6 +57,8 @@ const char* DPS_ErrTxt(DPS_Status s)
         ERR_CASE(DPS_ERR_SECURITY);
         ERR_CASE(DPS_ERR_NOT_ENCRYPTED);
         ERR_CASE(DPS_ERR_STOPPING);
+        ERR_CASE(DPS_ERR_RANGE);
+        ERR_CASE(DPS_ERR_LOST_PRECISION);
     default:
         snprintf(buf, sizeof(buf), "ERR%d", s);
         return buf;

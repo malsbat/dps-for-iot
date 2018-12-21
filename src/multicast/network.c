@@ -22,12 +22,13 @@
 
 #include <assert.h>
 #include <string.h>
-#include <malloc.h>
+#include <stdlib.h>
 #include <safe_lib.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
 #include <dps/private/network.h>
 #include "../coap.h"
+#include "../node.h"
 
 /*
  * Debug control for this module
@@ -114,7 +115,7 @@ static DPS_Status MulticastRxInit(DPS_MulticastReceiver* receiver)
 {
     int ret;
     struct sockaddr_storage recv_addr;
-    uv_loop_t* uv = DPS_GetLoop(receiver->node);
+    uv_loop_t* uv = receiver->node->loop;
     uv_interface_address_t* ifsAddrs;
     int numIfs;
     int i;
@@ -248,7 +249,7 @@ void DPS_MulticastStopReceive(DPS_MulticastReceiver* receiver)
 static DPS_Status MulticastTxInit(DPS_MulticastSender* sender)
 {
     int ret;
-    uv_loop_t* uv = DPS_GetLoop(sender->node);
+    uv_loop_t* uv = sender->node->loop;
     uv_interface_address_t* ifsAddrs;
     TxSocket* sock;
     int numIfs;
@@ -421,7 +422,7 @@ DPS_Status DPS_MulticastSend(DPS_MulticastSender* sender, void* appCtx, uv_buf_t
     MulticastSend* send = NULL;
     size_t i;
 
-#ifndef NDEBUG
+#ifdef DPS_DEBUG
     size_t len = 0;
     size_t j;
     for (j = 0; j < numBufs; ++j) {

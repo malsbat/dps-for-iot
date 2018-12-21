@@ -177,7 +177,7 @@ static void NetSend(DPS_Node* node, DPS_NetEndpoint* ep, int version, int type)
         exit(EXIT_FAILURE);
     }
     async->data = data;
-    ret = uv_async_init(DPS_GetLoop(node), async, NetSendTask);
+    ret = uv_async_init(node->loop, async, NetSendTask);
     if (ret < 0) {
         DPS_ERRPRINT("uv_async_init failed: %s\n", uv_strerror(ret));
         exit(EXIT_FAILURE);
@@ -228,8 +228,7 @@ int main(int argc, char** argv)
     DPS_Event* nodeDestroyed = NULL;
     DPS_Status ret;
 
-    DPS_Debug = 0;
-
+    DPS_Debug = DPS_FALSE;
     while (--argc) {
         if (IntArg("-v", &arg, &argc, &version, 1, UINT16_MAX)) {
             continue;
@@ -245,7 +244,7 @@ int main(int argc, char** argv)
         }
         if (strcmp(*arg, "-d") == 0) {
             ++arg;
-            DPS_Debug = 1;
+            DPS_Debug = DPS_TRUE;
             continue;
         }
         if (*arg[0] == '-') {
@@ -262,8 +261,9 @@ int main(int argc, char** argv)
         DPS_EndpointSetPort(&ep, port);
     }
     if (encrypt) {
+        size_t i;
         memoryKeyStore = DPS_CreateMemoryKeyStore();
-        for (size_t i = 0; i < NUM_KEYS; ++i) {
+        for (i = 0; i < NUM_KEYS; ++i) {
             DPS_SetContentKey(memoryKeyStore, &PskId[i], &Psk[i]);
         }
         DPS_SetNetworkKey(memoryKeyStore, &NetworkKeyId, &NetworkKey);
@@ -277,6 +277,7 @@ int main(int argc, char** argv)
         DPS_ERRPRINT("Failed to start node: %s\n", DPS_ErrTxt(ret));
         return EXIT_FAILURE;
     }
+    DPS_PRINT("Node is listening on port %d\n", DPS_GetPortNumber(node));
     NetSend(node, &ep, version, type);
 
     DPS_TimedWaitForEvent(nodeDestroyed, 2000);

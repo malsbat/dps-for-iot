@@ -51,6 +51,7 @@ extern "C" {
 #define DPS_CBOR_KEY_INTERESTS     10   /**< bstr */
 #define DPS_CBOR_KEY_TOPICS        11   /**< array (tstr) */
 #define DPS_CBOR_KEY_DATA          12   /**< bstr */
+#define DPS_CBOR_KEY_ACK_SEQ_NUM   13   /**< uint */
 
 /**
  * Convert seconds to milliseconds
@@ -155,6 +156,11 @@ DPS_Status DPS_TxBufferAppend(DPS_TxBuffer* buffer, const uint8_t* data, size_t 
 #define DPS_TxBufferUsed(b)  ((uint32_t)((b)->txPos - (b)->base))
 
 /**
+ * Size of transmit buffer
+ */
+#define DPS_TxBufferCapacity(b)  ((uint32_t)((b)->eob - (b)->base))
+
+/**
  * Convert a transmit buffer into a receive buffer. Note that this
  * aliases the internal storage so care must be taken to avoid a
  * double free.
@@ -209,7 +215,7 @@ struct _DPS_KeyStoreRequest {
     /** Called to provide a key to the requestor */
     DPS_Status (*setKey)(DPS_KeyStoreRequest* request, const DPS_Key* key);
     /** Called to provide the CA chain to the requestor */
-    DPS_Status (*setCA)(DPS_KeyStoreRequest* request, const char* ca); 
+    DPS_Status (*setCA)(DPS_KeyStoreRequest* request, const char* ca);
     /** Called to provide a certificate to the requestor */
     DPS_Status (*setCert)(DPS_KeyStoreRequest* request, const char* cert, size_t certLen,
                           const char* key, size_t keyLen, const char* pwd, size_t pwdLen);

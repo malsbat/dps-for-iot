@@ -11,6 +11,7 @@ vars.AddVariables(
     EnumVariable('transport', 'Transport protocol', default='udp', allowed_values=('udp', 'tcp', 'dtls', 'fuzzer'), ignorecase=2),
     EnumVariable('target', 'Build target', default='local', allowed_values=('local', 'yocto'), ignorecase=2),
     ListVariable('bindings', 'Bindings to build', bindings, bindings),
+    PathVariable('application', 'Application to build', '', PathVariable.PathAccept),
     ('CC', 'C compiler to use'),
     ('CXX', 'C++ compiler to use'))
 
@@ -20,12 +21,12 @@ if platform.system() == 'Windows':
         PathVariable('UV_PATH', 'Path where libuv is installed', 'ext\libuv', PathVariable.PathAccept),
         PathVariable('PYTHON_PATH', 'Path to Python', 'C:\Python27', PathVariable.PathAccept),
         PathVariable('SWIG', 'Path to SWIG executable', 'C:\swigwin-3.0.10\swig.exe', PathVariable.PathAccept),
-        PathVariable('DOXYGEN_PATH', 'Path to Doxygen', 'C:\Program Files\Doxygen', PathVariable.PathAccept))
+        PathVariable('DOXYGEN_PATH', 'Path to Doxygen', 'C:\Program Files\Doxygen', PathVariable.PathAccept),
+        PathVariable('DEF_FILE', 'Path to external defs for dll', 'dps_shared.def', PathVariable.PathIsFile))
 
 # Linux-specific command line variables
 if platform.system() == 'Linux':
     vars.AddVariables(
-        PathVariable('UV_PATH', 'Path where libuv is installed', '', PathVariable.PathAccept),
         BoolVariable('profile', 'Build for profiling?', False),
         BoolVariable('asan', 'Enable address sanitizer?', False),
         BoolVariable('tsan', 'Enable thread sanitizer?', False),
@@ -66,6 +67,12 @@ for b in bindings:
 if env['transport'] == 'udp':
     env['USE_UDP'] = 'true'
     env['CPPDEFINES'].append('DPS_USE_UDP')
+elif env['transport'] == 'tcp':
+    env['USE_TCP'] = 'true'
+    env['CPPDEFINES'].append('DPS_USE_TCP')
+elif env['transport'] == 'dtls':
+    env['USE_DTLS'] = 'true'
+    env['CPPDEFINES'].append('DPS_USE_DTLS')
 
 print("Building for " + env['variant'])
 
@@ -74,6 +81,7 @@ print("Building for " + env['variant'])
 if env['PLATFORM'] == 'win32':
 
     env.Append(CCFLAGS = ['/J', '/W3', '/WX', '/nologo'])
+    env.Append(CCFLAGS = ['/execution-charset:utf-8'])
 
     if env['variant'] == 'debug':
         env.Append(CCFLAGS = ['/Zi', '/MT', '/Od', '-DDPS_DEBUG'])
@@ -97,11 +105,13 @@ if env['PLATFORM'] == 'win32':
     env['PY_LIBPATH'] = [env['PYTHON_PATH'] + '\libs']
 
     # Where to find libuv and the libraries it needs
-    env['UV_LIBS'] = ['ws2_32', 'psapi', 'iphlpapi', 'shell32', 'userenv', 'user32', 'advapi32']
-    if extEnv['UV_PATH'] != os.path.join('ext', 'libuv'):
-        env['UV_LIBS'] = ['libuv'] + env['UV_LIBS']
-    env.Append(LIBPATH=[env['UV_PATH']])
-    env.Append(CPPPATH=[env['UV_PATH'] + '\include'])
+    env['DPS_LIBS'] = ['ws2_32', 'psapi', 'iphlpapi', 'shell32', 'userenv', 'user32', 'advapi32']
+    # Check if we need to build libuv
+    extUV = env['UV_PATH'] == 'ext\libuv'
+    if not extUV:
+        env.Append(DPS_LIBS=['libuv'])
+        env.Append(CPPPATH=[env['UV_PATH'] + '\include'])
+        env.Append(LIBPATH=[env['UV_PATH']])
 
     # Doxygen needs to be added to default path if available
     if env['DOXYGEN_PATH']:
@@ -109,12 +119,15 @@ if env['PLATFORM'] == 'win32':
 
 elif env['PLATFORM'] == 'posix':
 
+    # uncomment to test for C90 (with gnu extensions) compatibility
+    #env.Append(CCFLAGS = ['-std=gnu90'])
+
     # Enable address sanitizer
     if env['asan'] == True:
         env.Append(CCFLAGS = ['-fno-omit-frame-pointer', '-fsanitize=address'])
-        if env['CC'].endswith('gcc'):
+        if 'gcc' in env['CC']:
             env.Append(LIBS = ['asan'])
-        elif env['CC'].endswith('clang'):
+        elif 'clang' in env['CC']:
             env.Append(LINKFLAGS = ['-fsanitize=address'])
         else:
             print('Unsupported compiler')
@@ -123,9 +136,9 @@ elif env['PLATFORM'] == 'posix':
     # Enable thread sanitizer
     if env['tsan'] == True:
         env.Append(CCFLAGS = ['-fsanitize=thread'])
-        if env['CC'].endswith('gcc'):
+        if 'gcc' in env['CC']:
             env.Append(LIBS = ['tsan'])
-        elif env['CC'].endswith('clang'):
+        elif 'clang' in env['CC']:
             env.Append(LINKFLAGS = ['-fsanitize=thread'])
         else:
             print('Unsupported compiler')
@@ -134,9 +147,9 @@ elif env['PLATFORM'] == 'posix':
     # Enable undefined behavior sanitizer
     if env['ubsan'] == True:
         env.Append(CCFLAGS = ['-fsanitize=undefined'])
-        if env['CC'].endswith('gcc'):
+        if 'gcc' in env['CC']:
             env.Append(LIBS = ['ubsan'])
-        elif env['CC'].endswith('clang'):
+        elif 'clang' in env['CC']:
             env.Append(LINKFLAGS = ['-fsanitize=undefined'])
         else:
             print('Unsupported compiler')
@@ -144,7 +157,7 @@ elif env['PLATFORM'] == 'posix':
 
     # Enable fuzzer sanitizer
     if env['fsan'] == True:
-        if env['CC'].endswith('clang'):
+        if 'clang' in env['CC']:
             env.Append(CCFLAGS = ['-fsanitize=fuzzer-no-link'])
         else:
             print('Unsupported compiler')
@@ -152,7 +165,7 @@ elif env['PLATFORM'] == 'posix':
 
     # Enable code coverage
     if env['cov'] == True:
-        if env['CC'].endswith('clang'):
+        if 'clang' in env['CC']:
             env.Append(CCFLAGS = ['-fprofile-instr-generate', '-fcoverage-mapping'])
             env.Append(LINKFLAGS = ['-fprofile-instr-generate', '-fcoverage-mapping'])
         else:
@@ -200,12 +213,13 @@ elif env['PLATFORM'] == 'posix':
         env['PY_CPPPATH'] = ['/usr/include/python2.7']
     env['PY_LIBPATH'] = []
 
-    # Where to find libuv and the libraries it needs
-    env['UV_LIBS'] = ['uv', 'pthread']
+    env['DPS_LIBS'] = ['pthread']
 
-    if env['UV_PATH']:
-        env.Prepend(LIBPATH = env['UV_PATH'])
-        env.Prepend(CPPPATH = env['UV_PATH'] + '/include')
+    # Check if we need to build libuv
+    conf = env.Configure()
+    extUV = not conf.CheckLib('uv', symbol='uv_mutex_init_recursive')
+    env = conf.Finish()
+
 
 else:
     print('Unsupported system')
@@ -230,18 +244,31 @@ if env['target'] == 'yocto':
     extEnv.PrependENVPath('PATH', os.getenv('PATH'))
     extEnv.PrependENVPath('LDFLAGS', os.getenv('LDFLAGS'))
 
+ext_libs = []
+
+
 # Build external dependencies
-ext_libs = SConscript('ext/SConscript', exports=['extEnv'])
+ext_libs.append(SConscript('ext/SConscript.mbedtls', exports=['extEnv']))
+ext_libs.append(SConscript('ext/SConscript.safestring', exports=['extEnv']))
+if extUV: ext_libs.append(SConscript('ext/SConscript.libuv', exports=['extEnv']))
 
 version = '0.9.0'
 
-SConscript('SConscript', src_dir='.', variant_dir='build/obj', duplicate=0, exports=['env', 'ext_libs', 'version'])
+lib_dps = SConscript('SConscript', src_dir='.', variant_dir='build/obj', duplicate=0, exports=['env', 'ext_libs', 'extUV', 'version'])
+
+
+# Build any user applications
+appDir = env['application']
+if appDir != '':
+    print('Building application in ', appDir)
+    env.Default(appDir)
+    SConscript(appDir + '/SConscript', variant_dir=appDir + '/build/obj', duplicate=0, exports=['env', 'ext_libs', 'lib_dps'])
 
 ######################################################################
 # Scons to generate the dps_ns3.pc file from dps_ns3.pc.in file
 ######################################################################
 pc_file = 'dps_ns3.pc.in'
-pc_vars = {'\@PREFIX\@': env.GetLaunchDir().encode('string_escape'),
+pc_vars = {'\@PREFIX\@': env.GetLaunchDir().encode('unicode_escape'),
            '\@VERSION\@': version,
 }
 env.Substfile(pc_file, SUBST_DICT = pc_vars)

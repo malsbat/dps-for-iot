@@ -1,13 +1,6 @@
 # Distributed Publish & Subscribe for IoT
 
-[![Build Status](https://travis-ci.org/malsbat/dps-for-iot.svg?branch=master)](https://travis-ci.org/malsbat/dps-for-iot)
-[![Build Status](https://ci.appveyor.com/api/projects/status/github/malsbat/dps-for-iot?svg=true)](https://ci.appveyor.com/project/malsbat/dps-for-iot)
-
-***
-
-### Note: This is a preview release of the software and is intended for evaluation and experimentation only.
-
-***
+[![Build Status](https://travis-ci.org/intel/dps-for-iot.svg?branch=master)](https://travis-ci.org/intel/dps-for-iot)
 
 Distributed Publish & Subscribe for IoT (DPS) is a new protocol that
 implements the publish/subscribe (pub/sub) communication pattern.
@@ -22,3 +15,12 @@ computing in combination with cloud-based analytics.
 ## [Building and Running](https://intel.github.io/dps-for-iot/building-and-running.html)
 
 ## [Documentation](https://intel.github.io/dps-for-iot)
+
+In the *application* subdirectory there is a simple SConscript that can be used as a template for
+building your own statically linked DPS C application. Copy the application tree somewhere
+and add your source and header files to the src and include directories.
+
+To build:
+
+scons -C &lt;dps-root-dir&gt; application=&lt;your-application-dir&gt; bindings=none
+

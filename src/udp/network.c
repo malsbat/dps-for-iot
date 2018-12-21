@@ -22,7 +22,7 @@
 
 #include <assert.h>
 #include <string.h>
-#include <malloc.h>
+#include <stdlib.h>
 #include <safe_lib.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
@@ -99,7 +99,7 @@ DPS_NetContext* DPS_NetStart(DPS_Node* node, uint16_t port, DPS_OnReceive cb)
     if (!netCtx) {
         return NULL;
     }
-    ret = uv_udp_init(DPS_GetLoop(node), &netCtx->rxSocket);
+    ret = uv_udp_init(node->loop, &netCtx->rxSocket);
     if (ret) {
         DPS_ERRPRINT("uv_tcp_init error=%s\n", uv_err_name(ret));
         free(netCtx);
@@ -182,7 +182,10 @@ DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* ep, uv_buf
     int ret;
     NetSend* send;
 
-#ifndef NDEBUG
+    DPS_DBGTRACEA("node=%p,appCtx=%p,ep={addr=%s,cn=%p},bufs=%p,numBufs=%p,sendCompleteCB=%p\n",
+                  node, appCtx, DPS_NodeAddrToString(&ep->addr), ep->cn, bufs, numBufs, sendCompleteCB);
+
+#ifdef DPS_DEBUG
     {
         size_t i;
         size_t len = 0;

@@ -30,9 +30,13 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <sys/socket.h>
+#endif
 #include <dps/err.h>
 #include <dps/uuid.h>
-#include <uv.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -93,7 +97,7 @@ void DPS_CopyAddress(DPS_NodeAddress* dest, const DPS_NodeAddress* src);
  */
 void DPS_DestroyAddress(DPS_NodeAddress* addr);
 
-/** @} */ // end of nodeaddress group
+/** @} */ /* end of nodeaddress group */
 
 /**
  * @defgroup keystore Key Store
@@ -344,7 +348,7 @@ DPS_Status DPS_SetKeyStoreData(DPS_KeyStore* keyStore, void* data);
  */
 void* DPS_GetKeyStoreData(const DPS_KeyStore* keyStore);
 
-/** @} */ // end of KeyStore subgroup
+/** @} */ /* end of KeyStore subgroup */
 
 /**
  * @name In-memory Key Store
@@ -428,9 +432,9 @@ DPS_Status DPS_SetCertificate(DPS_MemoryKeyStore* mks, const char* cert, const c
  */
 DPS_KeyStore* DPS_MemoryKeyStoreHandle(DPS_MemoryKeyStore* keyStore);
 
-/** @} */ // end of MemoryKeyStore subgroup
+/** @} */ /* end of MemoryKeyStore subgroup */
 
-/** @} */ // end of keystore group
+/** @} */ /* end of keystore group */
 
 /**
  * @defgroup node Node
@@ -537,17 +541,6 @@ DPS_Status DPS_DestroyNode(DPS_Node* node, DPS_OnNodeDestroyed cb, void* data);
 void DPS_SetNodeSubscriptionUpdateDelay(DPS_Node* node, uint32_t subsRateMsecs);
 
 /**
- * Get the uv event loop for this node. The only thing that is safe to do with the node
- * is to create an async callback. Other libuv APIs can then be called from within the
- * async callback.
- *
- * @param node     The local node to use
- *
- * @return The uv event loop
- */
-uv_loop_t* DPS_GetLoop(DPS_Node* node);
-
-/**
  * Get the port number this node is listening for connections on
  *
  * @param node     The local node to use
@@ -621,7 +614,7 @@ typedef void (*DPS_OnResolveAddressComplete)(DPS_Node* node, DPS_NodeAddress* ad
  */
 DPS_Status DPS_ResolveAddress(DPS_Node* node, const char* host, const char* service, DPS_OnResolveAddressComplete cb, void* data);
 
-/** @} */ // end of node group
+/** @} */ /* end of node group */
 
 /**
  * @defgroup publication Publication
@@ -867,7 +860,7 @@ DPS_Status DPS_AckPublication(const DPS_Publication* pub, const uint8_t* ackPayl
  */
 const DPS_KeyId* DPS_AckGetSenderKeyId(const DPS_Publication* pub);
 
-/** @} */ // end of publication group
+/** @} */ /* end of publication group */
 
 /**
  * @defgroup subscription Subscription
@@ -979,7 +972,7 @@ DPS_Status DPS_Subscribe(DPS_Subscription* sub, DPS_PublicationHandler handler);
  */
 DPS_Status DPS_DestroySubscription(DPS_Subscription* sub);
 
-/** @} */ // end of subscription group
+/** @} */ /* end of subscription group */
 
 #ifdef __cplusplus
 }

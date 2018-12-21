@@ -22,6 +22,7 @@
 
 #include "keys.h"
 #include <ctype.h>
+#include <stdio.h>
 #include <string.h>
 
 static const DPS_UUID _NetworkKeyId = {
@@ -139,7 +140,8 @@ const char* KeyIdToString(const DPS_KeyId* keyId)
             isStr = isprint(keyId->id[i]);
         }
         if (isStr) {
-            strncpy(str, (const char*)keyId->id, sizeof(str));
+            memcpy(str, keyId->id, keyId->len);
+            str[keyId->len] = 0;
         } else {
             char* dst = str;
             for (i = 0; i < keyId->len; ++i) {

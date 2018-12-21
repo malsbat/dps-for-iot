@@ -21,7 +21,7 @@
 
 #include <assert.h>
 #include <string.h>
-#include <malloc.h>
+#include <stdlib.h>
 #include <safe_lib.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
@@ -193,6 +193,25 @@ static DPS_Publication* ClonePublication(DPS_Publication* pub)
     return clone;
 }
 
+static void FreeTopics(DPS_Publication* pub)
+{
+    size_t i;
+
+    assert(pub);
+    assert(pub->shared);
+
+    if (pub->shared->topics) {
+        for (i = 0; i < pub->shared->numTopics; ++i) {
+            if (pub->shared->topics[i]) {
+                free(pub->shared->topics[i]);
+            }
+        }
+        free(pub->shared->topics);
+        pub->shared->topics = NULL;
+        pub->shared->numTopics = 0;
+    }
+}
+
 static DPS_Publication* FreePublication(DPS_Node* node, DPS_Publication* pub)
 {
     DPS_Publication* next = pub->next;
@@ -227,14 +246,10 @@ static DPS_Publication* FreePublication(DPS_Node* node, DPS_Publication* pub)
             FreeRecipients(pub->shared);
             if (pub->shared->bf) {
                 DPS_BitVectorFree(pub->shared->bf);
-                pub->shared->bf = NULL;
             }
             DPS_TxBufferFree(&pub->shared->bfBuf);
             DPS_TxBufferFree(&pub->shared->topicsBuf);
-            if (pub->shared->topics) {
-                free(pub->shared->topics);
-                pub->shared->topics = NULL;
-            }
+            FreeTopics(pub);
             free(pub->shared);
         }
         free(pub);
@@ -408,59 +423,34 @@ static DPS_Status UpdatePubHistory(DPS_Node* node, DPS_Publication* pub)
                                 pub->shared->ackRequested, PUB_TTL(node, pub), &pub->shared->senderAddr);
 }
 
-
-typedef struct _SubCandidate {
-    DPS_Subscription* sub;
-    struct _SubCandidate* next;
-} SubCandidate;
-
 /*
- * Check if there is a local subscription for this publication
- * Note that we don't deliver expired publications to the handler.
+ * @param keyStore the key store used in decryption
+ * @param pub the publication to decrypt
+ * @param plainTextBuf the storage for decrypted.  The caller needs to
+ *                     call DPS_TxBufferFree when finished with the
+ *                     decrypted data.
+ * @param data pointer to decrypted data.  This is only valid during
+ *             the lifetime of the plainTextBuf and the publication.
+ * @param dataLen the length of the decrypted data.
+ *
+ * @return
+ * - DPS_OK - message decrypted and parsed succesfully
+ * - DPS_ERR_SECURITY - message failed to decrypt
+ * - Other error - message failed to parse correctly
  */
-static DPS_Status CallPubHandlers(DPS_Node* node, DPS_Publication* pub)
+static DPS_Status DecryptAndParsePub(DPS_KeyStore* keyStore, DPS_Publication* pub,
+                                     DPS_TxBuffer* plainTextBuf, uint8_t** data, size_t* dataLen)
 {
     static const int32_t EncryptedKeys[] = { DPS_CBOR_KEY_TOPICS, DPS_CBOR_KEY_DATA };
-    DPS_Status ret;
     uint8_t nonce[COSE_NONCE_LEN];
-    COSE_Entity recipient;
-    DPS_Subscription* sub;
-    DPS_RxBuffer encryptedBuf;
-    DPS_TxBuffer plainTextBuf;
     DPS_RxBuffer aadBuf;
     DPS_RxBuffer cipherTextBuf;
-    uint8_t* data = NULL;
-    size_t dataLen = 0;
+    COSE_Entity recipient;
+    DPS_RxBuffer encryptedBuf;
     CBOR_MapState mapState;
+    DPS_Status ret;
     size_t i;
-    SubCandidate* candidates = NULL;
-    SubCandidate* cdt = NULL;
 
-    DPS_DBGTRACE();
-
-    /*
-     * See if the publication is match candidate. We may discover later that
-     * this is a false positive when we check if the actual topic strings match.
-     */
-    for (sub = node->subscriptions; sub != NULL; sub = sub->next) {
-        if (!DPS_BitVectorIncludes(pub->shared->bf, sub->bf)) {
-            continue;
-        }
-        cdt = malloc(sizeof(SubCandidate));
-        if (!cdt) {
-            ret = DPS_ERR_RESOURCES;
-            goto Exit;
-        }
-        cdt->sub = sub;
-        cdt->next = candidates;
-        candidates = cdt;
-    }
-    /*
-     * Nothing more to do if we don't have any candidates
-     */
-    if (!candidates) {
-        return DPS_OK;
-    }
     /*
      * Try to decrypt the publication
      */
@@ -469,12 +459,12 @@ static DPS_Status CallPubHandlers(DPS_Node* node, DPS_Publication* pub)
     DPS_TxBufferToRx(&pub->protectedBuf, &aadBuf);
     DPS_TxBufferToRx(&pub->encryptedBuf, &cipherTextBuf);
 
-    ret = COSE_Decrypt(nonce, &recipient, &aadBuf, &cipherTextBuf, node->keyStore, &pub->shared->sender,
-                       &plainTextBuf);
+    ret = COSE_Decrypt(nonce, &recipient, &aadBuf, &cipherTextBuf, keyStore, &pub->shared->sender,
+                       plainTextBuf);
     if (ret == DPS_OK) {
         DPS_DBGPRINT("Publication was decrypted\n");
-        CBOR_Dump("plaintext", plainTextBuf.base, DPS_TxBufferUsed(&plainTextBuf));
-        DPS_TxBufferToRx(&plainTextBuf, &encryptedBuf);
+        CBOR_Dump("plaintext", plainTextBuf->base, DPS_TxBufferUsed(plainTextBuf));
+        DPS_TxBufferToRx(plainTextBuf, &encryptedBuf);
         /*
          * We will use the same key id when we encrypt the acknowledgement
          */
@@ -515,22 +505,17 @@ static DPS_Status CallPubHandlers(DPS_Node* node, DPS_Publication* pub)
         DPS_TxBufferToRx(&pub->encryptedBuf, &encryptedBuf);
     } else {
         DPS_WARNPRINT("Failed to decrypt publication - %s\n", DPS_ErrTxt(ret));
-        /*
-         * This doesn't indicate an error with the message, it may be
-         * that the message is not encrypted for this node
-         */
-        ret = DPS_OK;
-        goto Exit;
+        return DPS_ERR_SECURITY;
     }
     ret = DPS_ParseMapInit(&mapState, &encryptedBuf, EncryptedKeys, A_SIZEOF(EncryptedKeys), NULL, 0);
     if (ret != DPS_OK) {
-        goto Exit;
+        return ret;
     }
     while (!DPS_ParseMapDone(&mapState)) {
         int32_t key;
         ret = DPS_ParseMapNext(&mapState, &key);
         if (ret != DPS_OK) {
-            goto Exit;
+            return ret;
         }
         switch (key) {
         case DPS_CBOR_KEY_TOPICS:
@@ -545,15 +530,21 @@ static DPS_Status CallPubHandlers(DPS_Node* node, DPS_Publication* pub)
                 ret = DPS_ERR_INVALID;
                 break;
             }
-            pub->shared->topics = malloc(pub->shared->numTopics * sizeof(char*));
+            pub->shared->topics = calloc(pub->shared->numTopics, sizeof(char*));
             if (!pub->shared->topics) {
                 ret = DPS_ERR_RESOURCES;
                 break;
             }
             for (i = 0; i < pub->shared->numTopics; ++i) {
+                char* str;
                 size_t sz;
-                ret = CBOR_DecodeString(&encryptedBuf, &pub->shared->topics[i], &sz);
+                ret = CBOR_DecodeString(&encryptedBuf, &str, &sz);
                 if (ret != DPS_OK) {
+                    break;
+                }
+                pub->shared->topics[i] = strndup(str, sz);
+                if (!pub->shared->topics) {
+                    ret = DPS_ERR_RESOURCES;
                     break;
                 }
             }
@@ -562,25 +553,62 @@ static DPS_Status CallPubHandlers(DPS_Node* node, DPS_Publication* pub)
             /*
              * Get the pointer to the publication data
              */
-            ret = CBOR_DecodeBytes(&encryptedBuf, &data, &dataLen);
+            ret = CBOR_DecodeBytes(&encryptedBuf, data, dataLen);
             break;
         }
         if (ret != DPS_OK) {
             break;
         }
     }
-    if (ret != DPS_OK) {
-        goto Exit;
-    }
+    return ret;
+}
 
-    DPS_LockNode(node);
+/*
+ * Check if there is a local subscription for this publication
+ * Note that we don't deliver expired publications to the handler.
+ */
+static DPS_Status CallPubHandlers(DPS_Node* node, DPS_Publication* pub)
+{
+    DPS_Status ret = DPS_OK;
+    DPS_Subscription* sub;
+    DPS_Subscription* nextSub;
+    DPS_TxBuffer plainTextBuf;
+    int match;
+    uint8_t* data = NULL;
+    size_t dataLen = 0;
+    int needsDecrypt = DPS_TRUE;
+
+    DPS_DBGTRACE();
+
+    DPS_TxBufferClear(&plainTextBuf);
+
     /*
      * Iterate over the candidates and check that the pub strings are a match
      */
-    for (cdt = candidates; cdt; cdt = cdt->next) {
-        int match;
-        ret = DPS_MatchTopicList(pub->shared->topics, pub->shared->numTopics, cdt->sub->topics,
-                                 cdt->sub->numTopics, node->separators, DPS_FALSE, &match);
+    DPS_LockNode(node);
+    for (sub = node->subscriptions; sub != NULL; sub = nextSub) {
+        nextSub = sub->next;
+        if (!DPS_BitVectorIncludes(pub->shared->bf, sub->bf)) {
+            continue;
+        }
+        if (needsDecrypt) {
+            DPS_UnlockNode(node);
+            ret = DecryptAndParsePub(node->keyStore, pub, &plainTextBuf, &data, &dataLen);
+            if (ret == DPS_ERR_SECURITY) {
+                /*
+                 * This doesn't indicate an error with the message, it may be
+                 * that the message is not encrypted for this node
+                 */
+                ret = DPS_OK;
+                goto Exit;
+            } else if (ret != DPS_OK) {
+                goto Exit;
+            }
+            needsDecrypt = DPS_FALSE;
+            DPS_LockNode(node);
+        }
+        ret = DPS_MatchTopicList(pub->shared->topics, pub->shared->numTopics, sub->topics,
+                                 sub->numTopics, node->separators, DPS_FALSE, &match);
         if (ret != DPS_OK) {
             ret = DPS_OK;
             continue;
@@ -589,39 +617,31 @@ static DPS_Status CallPubHandlers(DPS_Node* node, DPS_Publication* pub)
             DPS_DBGPRINT("Matched subscription\n");
             UpdatePubHistory(node, pub);
             DPS_UnlockNode(node);
-            cdt->sub->handler(cdt->sub, pub, data, dataLen);
+            sub->handler(sub, pub, data, dataLen);
             DPS_LockNode(node);
         }
     }
     DPS_UnlockNode(node);
 
 Exit:
-
-    while (candidates) {
-        cdt = candidates;
-        candidates = candidates->next;
-        free(cdt);
-    }
     DPS_TxBufferFree(&plainTextBuf);
     /* Publication topics will be invalid now if the publication was encrypted */
-    if (pub->shared->topics) {
-        free(pub->shared->topics);
-        pub->shared->numTopics = 0;
-        pub->shared->topics = NULL;
-    }
+    FreeTopics(pub);
     return ret;
 }
 
 static DPS_Publication* LookupRetained(DPS_Node* node, DPS_UUID* pubId)
 {
-    DPS_Publication* pub;
+    DPS_Publication* pub = NULL;
 
+    DPS_LockNode(node);
     for (pub = node->publications; pub != NULL; pub = pub->next) {
         if ((pub->flags & PUB_FLAG_RETAINED) && (DPS_UUIDCompare(&pub->shared->pubId, pubId) == 0)) {
-            return pub;
+            break;
         }
     }
-    return NULL;
+    DPS_UnlockNode(node);
+    return pub;
 }
 
 DPS_Status DPS_DecodePublication(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxBuffer* buf, int multicast)
@@ -784,9 +804,11 @@ DPS_Status DPS_DecodePublication(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxBuff
         /*
          * Link in the pub
          */
+        DPS_LockNode(node);
         pub->next = node->publications;
         node->publications = pub;
         pub->shared->node = node;
+        DPS_UnlockNode(node);
     }
     pub->sequenceNum = sequenceNum;
     pub->shared->ackRequested = ackRequested;
@@ -800,11 +822,7 @@ DPS_Status DPS_DecodePublication(DPS_Node* node, DPS_NetEndpoint* ep, DPS_RxBuff
     /*
      * The topics array has pointers into pub->encryptedBuf which are now invalid
      */
-    if (pub->shared->topics) {
-        free(pub->shared->topics);
-        pub->shared->topics = NULL;
-        pub->shared->numTopics = 0;
-    }
+    FreeTopics(pub);
     /*
      * We have no reason here to hold onto a node for multicast publishers
      */
@@ -894,17 +912,17 @@ Exit:
 
 static void OnSendComplete(DPS_Node* node, DPS_Publication* pub)
 {
-    int updatePubs = DPS_FALSE;
+    int dataSendIsComplete = DPS_FALSE;
+    int moreDataInSeries = DPS_FALSE;
 
     DPS_LockNode(node);
     --pub->numSend;
-    if (!pub->numSend && pub->next) {
-        updatePubs = DPS_TRUE;
-    }
+    dataSendIsComplete = (pub->numSend == 0);
+    moreDataInSeries = pub->next && (pub->next->shared == pub->shared);
     DPS_PublicationDecRef(pub);
     DPS_UnlockNode(node);
 
-    if (updatePubs) {
+    if (dataSendIsComplete && moreDataInSeries) {
         DPS_UpdatePubs(node, NULL);
     }
 }
@@ -1012,6 +1030,11 @@ DPS_Status DPS_SendPublication(DPS_Node* node, DPS_Publication* pub, RemoteNode*
                  */
                 DPS_PublicationIncRef(pub);
                 ++pub->numSend;
+                /*
+                 * Update history to prevent retained publications from being resent.
+                 */
+                DPS_UpdatePubHistory(&node->history, &pub->shared->pubId, pub->sequenceNum,
+                                     pub->shared->ackRequested, PUB_TTL(node, pub), &remote->ep.addr);
             } else {
                 /*
                  * Only the first buffer can be freed here - we don't own the others
@@ -1074,6 +1097,9 @@ void DPS_ExpirePub(DPS_Node* node, DPS_Publication* pub)
 DPS_Publication* DPS_CreatePublication(DPS_Node* node)
 {
     DPS_Publication* pub;
+
+    DPS_DBGTRACE();
+
     if (!node) {
         return NULL;
     }
@@ -1099,14 +1125,7 @@ static void DestroyCopy(DPS_Publication* copy)
 {
     if (copy) {
         if (copy->shared) {
-            if (copy->shared->topics) {
-                for (int i = 0; i < copy->shared->numTopics; i++) {
-                    if (copy->shared->topics[i]) {
-                        free(copy->shared->topics[i]);
-                    }
-                }
-                free(copy->shared->topics);
-            }
+            FreeTopics(copy);
             FreeRecipients(copy->shared);
             free(copy->shared);
         }
@@ -1117,10 +1136,13 @@ static void DestroyCopy(DPS_Publication* copy)
 DPS_Publication* DPS_CopyPublication(const DPS_Publication* pub)
 {
     DPS_Publication* copy;
+    DPS_Status ret = DPS_ERR_RESOURCES;
+
+    DPS_DBGTRACE();
+
     if (!pub->shared->node) {
         return NULL;
     }
-    DPS_Status ret = DPS_ERR_RESOURCES;
     copy = calloc(1, sizeof(DPS_Publication));
     if (!copy) {
         DPS_ERRPRINT("malloc failure: no memory\n");
@@ -1148,12 +1170,13 @@ DPS_Publication* DPS_CopyPublication(const DPS_Publication* pub)
     copy->shared->node = pub->shared->node;
     copy->shared->numTopics = pub->shared->numTopics;
     if (pub->shared->numTopics > 0) {
+	int i;
         copy->shared->topics = calloc(pub->shared->numTopics, sizeof(char*));
         if (!copy->shared->topics) {
             DPS_ERRPRINT("malloc failure: no memory\n");
             goto Exit;
         }
-        for (int i = 0; i < pub->shared->numTopics; i++) {
+        for (i = 0; i < pub->shared->numTopics; i++) {
             copy->shared->topics[i] = strndup(pub->shared->topics[i], DPS_MAX_TOPIC_STRLEN);
         }
     }
@@ -1178,6 +1201,8 @@ DPS_Status DPS_InitPublication(DPS_Publication* pub,
     DPS_Status ret = DPS_OK;
     int8_t alg;
     size_t i;
+
+    DPS_DBGTRACE();
 
     if (!node) {
         return DPS_ERR_NULL;
@@ -1234,7 +1259,7 @@ DPS_Status DPS_InitPublication(DPS_Publication* pub,
         }
     }
     if (ret == DPS_OK) {
-        pub->shared->topics = malloc(numTopics * sizeof(char*));
+        pub->shared->topics = calloc(numTopics, sizeof(char*));
         if (!pub->shared->topics) {
             ret = DPS_ERR_RESOURCES;
         }
@@ -1255,22 +1280,13 @@ DPS_Status DPS_InitPublication(DPS_Publication* pub,
         }
         if (ret == DPS_OK) {
             for (i = 0; i < numTopics; ++i) {
-                /*
-                 * Encode the string in two steps so we can save off
-                 * the topicsBuf pointer into pub->shared->topics[i]
-                 */
-                uint64_t len = strnlen_s(topics[i], CBOR_MAX_STRING_LEN + 1) + 1;
-                if (len > CBOR_MAX_STRING_LEN) {
-                    ret = DPS_ERR_OVERFLOW;
-                    break;
-                }
-                ret = CBOR_EncodeLength(&pub->shared->topicsBuf, len, CBOR_STRING);
+                ret = CBOR_EncodeString(&pub->shared->topicsBuf, topics[i]);
                 if (ret != DPS_OK) {
                     break;
                 }
-                pub->shared->topics[i] = (char*)pub->shared->topicsBuf.txPos;
-                ret = CBOR_Copy(&pub->shared->topicsBuf, (uint8_t*)topics[i], len);
-                if (ret != DPS_OK) {
+                pub->shared->topics[i] = strndup(topics[i], DPS_MAX_TOPIC_STRLEN);
+                if (!pub->shared->topics[i]) {
+                    ret = DPS_ERR_RESOURCES;
                     break;
                 }
             }
@@ -1294,10 +1310,7 @@ DPS_Status DPS_InitPublication(DPS_Publication* pub,
     } else {
         DPS_TxBufferFree(&pub->shared->bfBuf);
         DPS_TxBufferFree(&pub->shared->topicsBuf);
-        if (pub->shared->topics) {
-            free(pub->shared->topics);
-            pub->shared->topics = NULL;
-        }
+        FreeTopics(pub);
         FreeRecipients(pub->shared);
         if (pub->shared->bf) {
             DPS_BitVectorFree(pub->shared->bf);
@@ -1324,6 +1337,8 @@ DPS_Status DPS_PublicationAddSubId(DPS_Publication* pub, const DPS_KeyId* keyId)
     DPS_Status ret;
     int8_t alg;
 
+    DPS_DBGTRACE();
+
     if (IsValidPub(pub)) {
         DPS_DBGPRINT("Publication has a keyId\n");
         ret = GetRecipientAlgorithm(pub->shared->node->keyStore, keyId, &alg);
@@ -1341,6 +1356,8 @@ DPS_Status DPS_PublicationAddSubId(DPS_Publication* pub, const DPS_KeyId* keyId)
 
 void DPS_PublicationRemoveSubId(DPS_Publication* pub, const DPS_KeyId* keyId)
 {
+    DPS_DBGTRACE();
+
     if (IsValidPub(pub)) {
         RemoveRecipient(pub, keyId);
     }
@@ -1515,12 +1532,11 @@ DPS_Status DPS_Publish(DPS_Publication* pub, const uint8_t* payload, size_t len,
         clone = newClone;
     }
     if (!clone) {
-        DPS_UnlockNode(node);
-        return DPS_ERR_RESOURCES;
+        ret = DPS_ERR_RESOURCES;
+        goto Exit;
     }
     clone->flags &= ~PUB_FLAG_PUBLISH;
     clone->checkToSend = DPS_FALSE;
-    DPS_UnlockNode(node);
     /*
      * Do some sanity checks for retained publication cancellation
      */
@@ -1559,11 +1575,12 @@ DPS_Status DPS_Publish(DPS_Publication* pub, const uint8_t* payload, size_t len,
     /*
      * Serialize the publication
      */
+    DPS_UnlockNode(node);
     ret = DPS_SerializePub(node, clone, payload, len, ttl);
+    DPS_LockNode(node);
     if (ret != DPS_OK) {
         goto Exit;
     }
-    DPS_LockNode(node);
     clone->flags |= PUB_FLAG_PUBLISH;
     if (AddToHistory(pub, clone)) {
         ++clone->shared->refCount;
@@ -1574,11 +1591,11 @@ DPS_Status DPS_Publish(DPS_Publication* pub, const uint8_t* payload, size_t len,
      */
     pub->sequenceNum = clone->sequenceNum;
     newClone = NULL;
-    DPS_UnlockNode(node);
-    DPS_UpdatePubs(node, clone);
-    ret = DPS_OK;
-
 Exit:
+    DPS_UnlockNode(node);
+    if (ret == DPS_OK) {
+        DPS_UpdatePubs(node, clone);
+    }
     if (newClone) {
         free(newClone);
     }
@@ -1590,6 +1607,7 @@ DPS_Status DPS_DestroyPublication(DPS_Publication* pub)
     DPS_Node* node;
 
     DPS_DBGTRACE();
+
     if (!pub) {
         return DPS_ERR_NULL;
     }
@@ -1648,7 +1666,11 @@ DPS_Publication* DPS_LookupAckHandler(DPS_Node* node, const DPS_UUID* pubId, uin
     return NULL;
 }
 
-#ifndef NDEBUG
+#ifdef DPS_DEBUG
+
+/* Maximum number of queued pubs to dump, the rest will be elided */
+#define DUMP_PUB_MAX 10
+
 static void DumpPub(DPS_Node* node, DPS_Publication* pub)
 {
     int16_t ttl = PUB_TTL(node, pub);
@@ -1671,8 +1693,12 @@ void DPS_DumpPubs(DPS_Node* node)
         for (pub = node->publications; pub; pub = nextPub) {
             nextPub = pub->next;
             if (pub->history) {
-                for (pub = pub->history; pub; pub = pub->next) {
+                int i;
+                for (i = 0, pub = pub->history; pub && (i < DUMP_PUB_MAX); ++i, pub = pub->next) {
                     DumpPub(node, pub);
+                }
+                if (pub && (i == DUMP_PUB_MAX)) {
+                    DPS_PRINT("  %s(...)\n", DPS_UUIDToString(&pub->shared->pubId));
                 }
             } else {
                 DumpPub(node, pub);
