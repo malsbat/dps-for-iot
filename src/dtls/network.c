@@ -29,6 +29,7 @@
 #include <dps/private/network.h>
 #include "../mbedtls.h"
 #include "../node.h"
+#include "../queue.h"
 
 #include "mbedtls/config.h"
 #include "mbedtls/ctr_drbg.h"
@@ -65,21 +66,21 @@ DPS_DEBUG_CONTROL(DPS_DEBUG_ON);
 /* Personalization string for the DRBG */
 #define PERSONALIZATION_STRING "DPS_DRBG"
 
-typedef struct _PendingRead {
+typedef struct _RecvData {
+    DPS_Queue queue;
     uv_buf_t buf;
-    struct _PendingRead* next;
-} PendingRead;
+} RecvData;
 
-typedef struct _PendingWrite {
+typedef struct _SendRequest {
+    DPS_Queue queue;
     DPS_NetConnection* cn;
     void* appCtx;
     uv_buf_t* bufs;
     size_t numBufs;
-    struct _PendingWrite* next;
 
     DPS_Status status;
     DPS_NetSendComplete sendCompleteCB;
-} PendingWrite;
+} SendRequest;
 
 /*
  * DPS_NetConnection holds mbedtls supporting data and any pending
@@ -88,6 +89,7 @@ typedef struct _PendingWrite {
  * issues -- ensuring certain buffers are alive for enough time.
  */
 typedef struct _DPS_NetConnection {
+    DPS_NetContext* netCtx;
     DPS_Node* node;
     /*
      * The ref counting strategy is as follows:
@@ -133,26 +135,32 @@ typedef struct _DPS_NetConnection {
     int handshakeDone;
     int handshake;
 
-    /*
-     * Entries in the read queue are created from data received from
-     * the network, and consumed by the callback we give to mbedtls.
-     */
-    PendingRead* readQueue;
+    enum {
+          CN_OPEN = 0,
+          CN_CLOSE_NOTIFIED = 1,
+          CN_CLOSING = 2
+    } state;
 
     /*
-     * Entries in the write queue are created with data we want to
+     * Entries in the receive queue are created from data received from
+     * the network, and consumed by the callback we give to mbedtls.
+     */
+    DPS_Queue recvQueue;
+
+    /*
+     * Entries in the send queue are created with data we want to
      * send to the network (via DPS_NetSend), and consumed when asking
      * mbedtls to encrypt data.
      */
-    PendingWrite* writeQueue;
+    DPS_Queue sendQueue;
 
     /*
-     * When entries from write queue are consumed, move them to
+     * When entries from send queue are consumed, move them to
      * callback queue so that the callback is called later, in an
      * idler without any locks.
      */
     uv_idle_t idleForSendCallbacks;
-    PendingWrite* callbackQueue;
+    DPS_Queue sendCompletedQueue;
 
     /*
      * Keep track of current timeout state for DTLS. mbedtls calls
@@ -171,7 +179,11 @@ typedef struct _DPS_NetConnection {
 
 #define MAX_READ_LEN   65536
 
+#define NET_RUNNING  1          /**< Net layer is running */
+#define NET_STOPPING 2          /**< Net layer is stopping */
+
 struct _DPS_NetContext {
+    int state;
     uv_udp_t rxSocket;
     uv_udp_recv_cb dataCB;
     uint32_t handshakeTimeoutMin;
@@ -179,9 +191,36 @@ struct _DPS_NetContext {
     DPS_Node* node;
     DPS_OnReceive receiveCB;
     DPS_NetConnection* cns;
+};
 
-    /* Scratch buffer used to store the decrypted content. */
-    char plainBuffer[MAX_READ_LEN];
+/*
+ * Used when the key store supports certificates.
+ */
+static const int AllCipherSuites[] = {
+    MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+    MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384,
+    MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+    MBEDTLS_TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
+    MBEDTLS_TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA384,
+    MBEDTLS_TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA256,
+    MBEDTLS_TLS_PSK_WITH_AES_256_GCM_SHA384,
+    MBEDTLS_TLS_PSK_WITH_AES_256_CBC_SHA384,
+    MBEDTLS_TLS_PSK_WITH_AES_128_GCM_SHA256,
+    MBEDTLS_TLS_PSK_WITH_AES_128_CBC_SHA256,
+    0
+};
+
+/*
+ * Used when the key store supports only PSKs.
+ */
+static const int PskCipherSuites[] = {
+    MBEDTLS_TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA384,
+    MBEDTLS_TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA256,
+    MBEDTLS_TLS_PSK_WITH_AES_256_GCM_SHA384,
+    MBEDTLS_TLS_PSK_WITH_AES_256_CBC_SHA384,
+    MBEDTLS_TLS_PSK_WITH_AES_128_GCM_SHA256,
+    MBEDTLS_TLS_PSK_WITH_AES_128_CBC_SHA256,
+    0
 };
 
 static void AllocBuffer(uv_handle_t* handle, size_t suggestedSize, uv_buf_t* buf)
@@ -203,7 +242,7 @@ static void OnServerData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, c
 static void OnClientData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, const struct sockaddr* addr, unsigned flags)
 {
     DPS_NetConnection* cn = socket->data;
-    DPS_NetContext* netCtx = cn->node->netCtx;
+    DPS_NetContext* netCtx = cn->netCtx;
     /*
      * Use the rxSocket here as it's only purpose in dataCB is to get
      * to the DPS_NetContext
@@ -214,7 +253,7 @@ static void OnClientData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, c
 static uv_udp_t* GetSocket(DPS_NetConnection* cn)
 {
     if (cn->type == MBEDTLS_SSL_IS_SERVER) {
-        DPS_NetContext* netCtx = cn->node->netCtx;
+        DPS_NetContext* netCtx = cn->netCtx;
         return &netCtx->rxSocket;
     } else {
         return &cn->socket;
@@ -233,115 +272,88 @@ static DPS_NetConnection* LookupConnection(DPS_NetContext* netCtx, DPS_NodeAddre
     return NULL;
 }
 
-static PendingRead* CreatePendingRead(ssize_t nread, const uv_buf_t* buf)
+static RecvData* CreateRecvData(ssize_t nread, const uv_buf_t* buf)
 {
-    PendingRead* pr;
+    RecvData* data;
 
-    pr = calloc(1, sizeof(PendingRead));
-    if (!pr) {
+    data = calloc(1, sizeof(RecvData));
+    if (!data) {
         return NULL;
     }
     /* buf was allocated already via AllocBuffer. */
-    pr->buf = *buf;
+    data->buf = *buf;
 #ifdef _WIN32
-    pr->buf.len = (ULONG) nread;
+    data->buf.len = (ULONG) nread;
 #else
-    pr->buf.len = nread;
+    data->buf.len = nread;
 #endif
-    return pr;
+    return data;
 }
 
-static void DestroyPendingRead(PendingRead* pr)
+static void DestroyRecvData(RecvData* data)
 {
-    if (pr) {
-        if (pr->buf.base) {
-            free(pr->buf.base);
+    if (data) {
+        if (data->buf.base) {
+            free(data->buf.base);
         }
-        free(pr);
+        free(data);
     }
 }
 
-static PendingWrite* CreatePendingWrite(void* appCtx, uv_buf_t* bufs, size_t numBufs,
+static SendRequest* CreateSendRequest(void* appCtx, uv_buf_t* bufs, size_t numBufs,
                                         DPS_NetSendComplete sendCompleteCB)
 {
-    PendingWrite* pw;
+    SendRequest* req;
 
-    pw = calloc(1, sizeof(PendingWrite));
-    if (!pw) {
+    req = calloc(1, sizeof(SendRequest));
+    if (!req) {
         return NULL;
     }
-    pw->appCtx = appCtx;
-    pw->bufs = calloc(numBufs, sizeof(uv_buf_t));
-    if (!pw->bufs) {
-        free(pw);
+    req->appCtx = appCtx;
+    req->bufs = calloc(numBufs, sizeof(uv_buf_t));
+    if (!req->bufs) {
+        free(req);
         return NULL;
     }
-    memcpy_s(pw->bufs, numBufs * sizeof(uv_buf_t), bufs, numBufs * sizeof(uv_buf_t));
-    pw->numBufs = numBufs;
-    pw->sendCompleteCB = sendCompleteCB;
-    return pw;
+    memcpy_s(req->bufs, numBufs * sizeof(uv_buf_t), bufs, numBufs * sizeof(uv_buf_t));
+    req->numBufs = numBufs;
+    req->sendCompleteCB = sendCompleteCB;
+    return req;
 }
 
-static void DestroyPendingWrite(PendingWrite* pw)
+static void DestroySendRequest(SendRequest* req)
 {
-    if (pw) {
-        if (pw->bufs) {
-            free(pw->bufs);
+    if (req) {
+        if (req->bufs) {
+            free(req->bufs);
         }
-        free(pw);
+        free(req);
     }
 }
 
 static void CancelPending(DPS_NetConnection* cn)
 {
     /*
-     * Capture state of connection as any of the DecRef calls below
-     * may destroy it.
+     * Protect connection while we are modifying the queues.
      */
-    PendingRead* rq = cn->readQueue;
-    PendingWrite* wq = cn->writeQueue;
-    PendingWrite* cq = cn->callbackQueue;
-    int handshake = cn->handshake;
+    DPS_NetConnectionIncRef(cn);
 
-    cn->readQueue = NULL;
-    cn->writeQueue = NULL;
-    cn->callbackQueue = NULL;
-    cn->handshake = 0;
-
-    while (rq) {
-        PendingRead* pr = rq;
-        rq = rq->next;
+    while (!DPS_QueueEmpty(&cn->sendQueue)) {
+        SendRequest* req = (SendRequest*)DPS_QueueFront(&cn->sendQueue);
+        DPS_QueueRemove(&req->queue);
+        DPS_DBGPRINT("Canceling SendRequest=%p\n", req);
+        req->status = DPS_ERR_NETWORK;
+        DPS_QueuePushBack(&cn->sendCompletedQueue, &req->queue);
+    }
+    while (!DPS_QueueEmpty(&cn->sendCompletedQueue)) {
+        SendRequest* req = (SendRequest*)DPS_QueueFront(&cn->sendCompletedQueue);
+        DPS_QueueRemove(&req->queue);
+        req->sendCompleteCB(cn->node, req->appCtx, &cn->peer, req->bufs, req->numBufs, req->status);
         DPS_NetConnectionDecRef(cn);
-        DestroyPendingRead(pr);
+        DestroySendRequest(req);
     }
 
-    while (wq) {
-        PendingWrite* pw = wq;
-        wq = wq->next;
-        DPS_DBGPRINT("calling sendComplete callback for PendingWrite=%p [cancel]\n", pw);
-        pw->sendCompleteCB(cn->node, pw->appCtx, &cn->peer, pw->bufs, pw->numBufs, DPS_ERR_NETWORK);
-        DPS_NetConnectionDecRef(cn);
-        DestroyPendingWrite(pw);
-    }
-
-    while (cq) {
-        PendingWrite* pw = cq;
-        cq = cq->next;
-        DPS_DBGPRINT("calling sendComplete callback for PendingWrite=%p [cancel]\n", pw);
-        pw->sendCompleteCB(cn->node, pw->appCtx, &cn->peer, pw->bufs, pw->numBufs, DPS_ERR_NETWORK);
-        DPS_NetConnectionDecRef(cn);
-        DestroyPendingWrite(pw);
-    }
-
-    switch (handshake) {
-    case MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED:
-    case MBEDTLS_ERR_SSL_WANT_READ:
-    case MBEDTLS_ERR_SSL_WANT_WRITE:
-        DPS_NetConnectionDecRef(cn);
-        break;
-    default:
-        break;
-    }
+    DPS_NetConnectionDecRef(cn);
 }
 
 static void OnTLSDebug(void *ctx, int level, const char *file, int line, const char *str)
@@ -475,7 +487,7 @@ static void OnTLSTimerSet(void* data, uint32_t int_ms, uint32_t fin_ms)
     }
     uv_timer_start(&cn->timer, OnTimeout, int_ms, fin_ms - int_ms);
     if (!active) {
-        DPS_NetConnectionAddRef(cn);
+        DPS_NetConnectionIncRef(cn);
     }
 }
 
@@ -497,37 +509,38 @@ static int OnTLSTimerGet(void* data)
  * read the data. Unfortunately mbedtls doesn't provide a way to
  * directly feed the data into its state machine.
  *
- * OnTLSRecv() consumes the read queue. OnTLSSend uses uv_udp
+ * OnTLSRecv() consumes the receive queue. OnTLSSend uses uv_udp
  * functions to write to the network directly.
  */
 
-static int OnTLSRecv(void* data, unsigned char *buf, size_t len)
+static int OnTLSRecv(void* userData, unsigned char *buf, size_t len)
 {
-    DPS_NetConnection* cn = data;
+    DPS_NetConnection* cn = userData;
+    RecvData* data;
 
     DPS_DBGTRACEA("cn=%p,buf=%p,len=%d\n", cn, buf, len);
 
-    PendingRead* pr = cn->readQueue;
-    if (!pr) {
-        DPS_DBGPRINT("Pending read empty\n");
+    if (DPS_QueueEmpty(&cn->recvQueue)) {
+        DPS_DBGPRINT("Receive queue empty\n");
         return MBEDTLS_ERR_SSL_WANT_READ;
     }
+    data = (RecvData*)DPS_QueueFront(&cn->recvQueue);
 
-    DPS_DBGPRINT("Using pending read with %zu bytes\n", pr->buf.len);
-    if (pr->buf.len > len) {
+    DPS_DBGPRINT("Using queued data with %zu bytes\n", data->buf.len);
+    if (data->buf.len > len) {
         return MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL;
     }
-    if (pr->buf.len > INT_MAX) {
-        /* pr->buf.len will be truncated to an int return value */
+    if (data->buf.len > INT_MAX) {
+        /* data->buf.len will be truncated to an int return value */
         return MBEDTLS_ERR_SSL_BUFFER_TOO_SMALL;
     }
 
-    size_t dataLen = pr->buf.len;
-    memcpy_s(buf, pr->buf.len, pr->buf.base, dataLen);
+    size_t dataLen = data->buf.len;
+    memcpy_s(buf, data->buf.len, data->buf.base, dataLen);
 
-    cn->readQueue = pr->next;
+    DPS_QueueRemove(&data->queue);
     DPS_NetConnectionDecRef(cn);
-    DestroyPendingRead(pr);
+    DestroyRecvData(data);
     return (int) dataLen;
 }
 
@@ -615,21 +628,28 @@ static int OnTLSSend(void* data, const unsigned char *buf, size_t len)
     DPS_DBGPRINT("Created sendReq=%p\n", sendReq);
 
     struct sockaddr_storage inaddr;
-    memcpy_s(&inaddr, sizeof(inaddr), &cn->peer.addr.inaddr, sizeof(cn->peer.addr.inaddr));
+    memcpy_s(&inaddr, sizeof(inaddr), &cn->peer.addr.u.inaddr, sizeof(cn->peer.addr.u.inaddr));
     DPS_MapAddrToV6((struct sockaddr *)&inaddr);
 
-    int err = uv_udp_send(&sendReq->uvReq, GetSocket(cn), &sendReq->buf, 1, (const struct sockaddr *)&inaddr, OnSendComplete);
+    int err = uv_udp_send(&sendReq->uvReq, GetSocket(cn), &sendReq->buf, 1,
+                          (const struct sockaddr *)&inaddr, OnSendComplete);
     if (err) {
         DPS_ERRPRINT("Send failed: %s\n", uv_err_name(err));
         goto ErrorExit;
     }
-    DPS_NetConnectionAddRef(cn);
+    DPS_NetConnectionIncRef(cn);
 
     return (int) len;
 
  ErrorExit:
     DestroySendReq(sendReq);
     return -1;
+}
+
+static void RxHandleClosed(uv_handle_t* handle)
+{
+    DPS_DBGPRINT("Closed Rx handle %p\n", handle);
+    free(handle->data);
 }
 
 static void FreeConnection(DPS_NetConnection* cn)
@@ -648,6 +668,29 @@ static void FreeConnection(DPS_NetConnection* cn)
 
     if (cn->peerAddr) {
         DPS_DestroyAddress(cn->peerAddr);
+    }
+
+    if (cn->netCtx) {
+        DPS_NetConnection* next = cn->next;
+        if (cn->netCtx->cns == cn) {
+            cn->netCtx->cns = next;
+        } else if (cn->netCtx->cns) {
+            DPS_NetConnection* prev = cn->netCtx->cns;
+            while (prev->next != cn) {
+                prev = prev->next;
+                assert(prev);
+            }
+            prev->next = next;
+        }
+    }
+    /*
+     * DPS_NetStop may have been called while some connections are
+     * still active.  Finish the work of DPS_NetStop here when the
+     * last connection is removed from the list.
+     */
+    if ((cn->netCtx->state == NET_STOPPING) && !cn->netCtx->cns) {
+        uv_udp_recv_stop(&cn->netCtx->rxSocket);
+        uv_close((uv_handle_t*)&cn->netCtx->rxSocket, RxHandleClosed);
     }
     free(cn);
 }
@@ -686,41 +729,54 @@ static void DestroyConnection(DPS_NetConnection* cn)
     DPS_DBGTRACEA("cn=%p\n", cn);
 
     assert(cn->refCount == 0);
-    assert(!cn->readQueue);
-    assert(!cn->writeQueue);
-    assert(!cn->callbackQueue);
+    assert(DPS_QueueEmpty(&cn->recvQueue));
+    assert(DPS_QueueEmpty(&cn->sendQueue));
+    assert(DPS_QueueEmpty(&cn->sendCompletedQueue));
     assert(cn->handshake != MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED &&
            cn->handshake != MBEDTLS_ERR_SSL_WANT_READ &&
            cn->handshake != MBEDTLS_ERR_SSL_WANT_WRITE);
 
-    if (cn->node->netCtx) {
-        DPS_NetConnection* next = cn->next;
-        if (cn->node->netCtx->cns == cn) {
-            cn->node->netCtx->cns = next;
-        } else if (cn->node->netCtx->cns) {
-            DPS_NetConnection* prev = cn->node->netCtx->cns;
-            while (prev->next != cn) {
-                prev = prev->next;
-                assert(prev);
-            }
-            prev->next = next;
+    switch (cn->state) {
+    case CN_OPEN:
+        cn->state = CN_CLOSE_NOTIFIED;
+        int ret = mbedtls_ssl_close_notify(&cn->ssl);
+        if (ret != 0) {
+            DPS_ERRPRINT("Close notify failed: %s\n", TLSErrTxt(ret));
         }
-    }
-
-    assert(!uv_is_active((uv_handle_t*)&cn->timer));
-    uv_idle_stop(&cn->idleForSendCallbacks);
-    if (cn->type == MBEDTLS_SSL_IS_CLIENT) {
-        uv_udp_recv_stop(&cn->socket);
-    }
-
-    if ((cn->type == MBEDTLS_SSL_IS_CLIENT) && !uv_is_closing((uv_handle_t*)&cn->socket)) {
-        uv_close((uv_handle_t*)&cn->socket, SocketClosed);
-    } else if (!uv_is_closing((uv_handle_t*)&cn->idleForSendCallbacks)) {
-        uv_close((uv_handle_t*)&cn->idleForSendCallbacks, IdleForCallbacksClosed);
-    } else if (!uv_is_closing((uv_handle_t*)&cn->timer)) {
-        uv_close((uv_handle_t*)&cn->timer, TimerClosed);
-    } else {
-        FreeConnection(cn);
+        /*
+         * The ref count may be non-0 now if mbedtls has work to do
+         * for the close notify above.
+         */
+        if (cn->refCount > 0) {
+            return;
+        }
+        /* FALLTHROUGH */
+    case CN_CLOSE_NOTIFIED:
+        cn->state = CN_CLOSING;
+        assert(!uv_is_active((uv_handle_t*)&cn->timer));
+        if (uv_is_active((uv_handle_t*)&cn->idleForSendCallbacks)) {
+            uv_idle_stop(&cn->idleForSendCallbacks);
+            DPS_NetConnectionDecRef(cn);
+        }
+        if (cn->type == MBEDTLS_SSL_IS_CLIENT) {
+            uv_udp_recv_stop(&cn->socket);
+        }
+        if ((cn->type == MBEDTLS_SSL_IS_CLIENT) && !uv_is_closing((uv_handle_t*)&cn->socket)) {
+            uv_close((uv_handle_t*)&cn->socket, SocketClosed);
+        } else if (!uv_is_closing((uv_handle_t*)&cn->idleForSendCallbacks)) {
+            uv_close((uv_handle_t*)&cn->idleForSendCallbacks, IdleForCallbacksClosed);
+        } else if (!uv_is_closing((uv_handle_t*)&cn->timer)) {
+            uv_close((uv_handle_t*)&cn->timer, TimerClosed);
+        } else {
+            FreeConnection(cn);
+        }
+        break;
+    case CN_CLOSING:
+        /*
+         * A close callback is pending and will drive the rest of the
+         * destroy steps.
+         */
+        return;
     }
 }
 
@@ -829,6 +885,7 @@ static DPS_NetConnection* CreateConnection(DPS_Node* node, const struct sockaddr
     DPS_NetContext* netCtx = node->netCtx;
     DPS_KeyStore* keyStore = node->keyStore;
     DPS_KeyStoreRequest request;
+    const int* ciphersuites = AllCipherSuites;
 
     DPS_DBGTRACEA("node=%p,addr=%s,type=%s\n",
                   node, DPS_NetAddrText(addr), (type == MBEDTLS_SSL_IS_SERVER) ? "server" : "client");
@@ -843,15 +900,19 @@ static DPS_NetConnection* CreateConnection(DPS_Node* node, const struct sockaddr
         return NULL;
     }
 
+    cn->netCtx = netCtx;
     cn->node = node;
     cn->type = type;
     cn->peerAddr = DPS_CreateAddress();
-    DPS_SetAddress(cn->peerAddr, addr);
+    DPS_NetSetAddr(cn->peerAddr, DPS_DTLS, addr);
 
     uv_timer_init(node->loop, &cn->timer);
     cn->timerStatus = -1;
     cn->timer.data = cn;
 
+    DPS_QueueInit(&cn->recvQueue);
+    DPS_QueueInit(&cn->sendQueue);
+    DPS_QueueInit(&cn->sendCompletedQueue);
     uv_idle_init(node->loop, &cn->idleForSendCallbacks);
     cn->idleForSendCallbacks.data = cn;
 
@@ -930,25 +991,31 @@ static DPS_NetConnection* CreateConnection(DPS_Node* node, const struct sockaddr
     request.data = cn;
 
     mbedtls_x509_crt_init(&cn->cacert);
-    if (keyStore->caHandler) {
+    if (!keyStore->caHandler) {
+        ciphersuites = PskCipherSuites;
+    } else {
         request.setCA = SetCA;
         ret = keyStore->caHandler(&request);
         if (ret == 0) {
             mbedtls_ssl_conf_ca_chain(&cn->conf, &cn->cacert, NULL);
         } else {
             DPS_WARNPRINT("Parsing trusted certificate(s) failed: %s\n", DPS_ErrTxt(ret));
+            ciphersuites = PskCipherSuites;
         }
         request.setCA = NULL;
     }
     mbedtls_x509_crt_init(&cn->cert);
     mbedtls_pk_init(&cn->pkey);
-    if (keyStore->keyHandler) {
+    if (!keyStore->keyHandler) {
+        ciphersuites = PskCipherSuites;
+    } else {
         request.setKey = SetCert;
         ret = keyStore->keyHandler(&request, &node->signer.kid);
         if (ret == 0) {
             mbedtls_ssl_conf_own_cert(&cn->conf, &cn->cert, &cn->pkey);
         } else {
             DPS_WARNPRINT("Parsing certificate failed: %s\n", DPS_ErrTxt(ret));
+            ciphersuites = PskCipherSuites;
         }
         request.setKey = NULL;
     }
@@ -965,6 +1032,10 @@ static DPS_NetConnection* CreateConnection(DPS_Node* node, const struct sockaddr
         }
         request.setKeyAndId = NULL;
     }
+    for (const int* cs = ciphersuites; *cs; ++cs) {
+        DPS_DBGPRINT("  %s\n", mbedtls_ssl_get_ciphersuite_name(*cs));
+    }
+    mbedtls_ssl_conf_ciphersuites(&cn->conf, ciphersuites);
     mbedtls_ssl_conf_authmode(&cn->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
 
     mbedtls_ssl_init(&cn->ssl);
@@ -996,24 +1067,20 @@ static DPS_NetConnection* CreateConnection(DPS_Node* node, const struct sockaddr
 
 static void OnIdleForSendCallbacks(uv_idle_t* idle)
 {
-    DPS_DBGTRACE();
-
     DPS_NetConnection* cn = (DPS_NetConnection*)idle->data;
 
-    if (!cn->callbackQueue) {
-        DPS_DBGPRINT("OnIdleForSendCallbacks() called without anything in the callback queue\n");
-    }
+    DPS_DBGTRACE();
 
-    while (cn->callbackQueue) {
-        PendingWrite* pw = cn->callbackQueue;
-        cn->callbackQueue = pw->next;
-        DPS_DBGPRINT("Calling sendComplete callback for PendingWrite=%p status=%d\n", pw, pw->status);
-        pw->sendCompleteCB(cn->node, pw->appCtx, &cn->peer, pw->bufs, pw->numBufs, pw->status);
+    while (!DPS_QueueEmpty(&cn->sendCompletedQueue)) {
+        SendRequest* req = (SendRequest*)DPS_QueueFront(&cn->sendCompletedQueue);
+        DPS_QueueRemove(&req->queue);
+        req->sendCompleteCB(cn->node, req->appCtx, &cn->peer, req->bufs, req->numBufs, req->status);
         DPS_NetConnectionDecRef(cn);
-        DestroyPendingWrite(pw);
+        DestroySendRequest(req);
     }
 
     uv_idle_stop(&cn->idleForSendCallbacks);
+    DPS_NetConnectionDecRef(cn);
 }
 
 /*
@@ -1037,37 +1104,32 @@ static void TLSSend(DPS_NetConnection* cn)
 
     DPS_DBGTRACEA("cn=%p\n", cn);
 
-    PendingWrite* pw = cn->writeQueue;
-    if (!pw) {
-        DPS_DBGPRINT("No pending writes\n");
+    if (DPS_QueueEmpty(&cn->sendQueue)) {
+        DPS_DBGPRINT("No pending sends\n");
         return;
     }
+    SendRequest* req = (SendRequest*)DPS_QueueFront(&cn->sendQueue);
+    DPS_QueueRemove(&req->queue);
 
-    cn->writeQueue = pw->next;
-    pw->next = NULL;
-
-    {
-        PendingWrite* q = cn->callbackQueue;
-        if (!q) {
-            cn->callbackQueue = pw;
-            uv_idle_start(&cn->idleForSendCallbacks, OnIdleForSendCallbacks);
-        } else {
-            while (q->next) {
-                q = q->next;
-            }
-            q->next = pw;
+    DPS_QueuePushBack(&cn->sendCompletedQueue, &req->queue);
+    if (!uv_is_active((uv_handle_t*)&cn->idleForSendCallbacks)) {
+        ret = uv_idle_start(&cn->idleForSendCallbacks, OnIdleForSendCallbacks);
+        if (ret == 0) {
+            /*
+             * Add a ref while OnIdleForSendCallbacks is pending.
+             */
+            DPS_NetConnectionIncRef(cn);
         }
     }
+    DPS_DBGPRINT("Using pending send with %d bufs\n", req->numBufs);
 
-    DPS_DBGPRINT("Using pending write with %d bufs\n", pw->numBufs);
-
-    if (pw->numBufs == 1) {
-        total = pw->bufs[0].len;
-        base = (uint8_t*)pw->bufs[0].base;
+    if (req->numBufs == 1) {
+        total = req->bufs[0].len;
+        base = (uint8_t*)req->bufs[0].base;
     } else {
         total = 0;
-        for (int i = 0; i < pw->numBufs; i++) {
-            total += pw->bufs[i].len;
+        for (size_t i = 0; i < req->numBufs; i++) {
+            total += req->bufs[i].len;
         }
 
         /*
@@ -1077,11 +1139,11 @@ static void TLSSend(DPS_NetConnection* cn)
          */
         ret = DPS_TxBufferInit(&txbuf, NULL, total);
         if (ret != DPS_OK) {
-            pw->status = DPS_ERR_RESOURCES;
+            req->status = DPS_ERR_RESOURCES;
             return;
         }
-        for (int i = 0; i < pw->numBufs; i++) {
-            DPS_TxBufferAppend(&txbuf, (uint8_t*)pw->bufs[i].base, pw->bufs[i].len);
+        for (size_t i = 0; i < req->numBufs; i++) {
+            DPS_TxBufferAppend(&txbuf, (uint8_t*)req->bufs[i].base, req->bufs[i].len);
         }
         base = txbuf.base;
     }
@@ -1093,11 +1155,11 @@ static void TLSSend(DPS_NetConnection* cn)
      * Protect cn since mbedtls_ssl_write may consume all the
      * references.
      */
-    DPS_NetConnectionAddRef(cn);
+    DPS_NetConnectionIncRef(cn);
 
     /*
      * HERE: there's no data pointer to make a connection between this
-     * PendingWrite and whatever we are going to write in the udp
+     * SendRequest and whatever we are going to write in the udp
      * socket. Maybe it is implicit that after this call our udp
      * callback was called, so we stitch things together after the
      * call.
@@ -1107,38 +1169,49 @@ static void TLSSend(DPS_NetConnection* cn)
         base = base + ret;
         total = total - ret;
         ret = mbedtls_ssl_write(&cn->ssl, base, total);
-    } while (0 < ret && ret < total);
+    } while (0 < ret && (size_t)ret < total);
 
     DPS_NetConnectionDecRef(cn);
 
-    if (pw->numBufs != 1) {
+    if (req->numBufs != 1) {
         DPS_TxBufferFree(&txbuf);
     }
 
     if (ret < 0) {
         DPS_ERRPRINT("TLS write failed: %s\n", TLSErrTxt(ret));
-        pw->status = DPS_ERR_NETWORK;
+        req->status = DPS_ERR_NETWORK;
     }
 }
 
 static void TLSRecv(DPS_NetConnection* cn)
 {
-    DPS_NetContext* netCtx = cn->node->netCtx;
+    DPS_NetContext* netCtx = cn->netCtx;
+    DPS_NetRxBuffer* buf = NULL;
     int ret;
-    uint8_t* data = NULL;
-    size_t len = 0;
     DPS_Status status;
 
     /*
      * Protect cn since mbedtls_ssl_read may consume all the
      * references.
      */
-    DPS_NetConnectionAddRef(cn);
+    DPS_NetConnectionIncRef(cn);
 
-    ret = mbedtls_ssl_read(&cn->ssl, (unsigned char*)netCtx->plainBuffer, sizeof(netCtx->plainBuffer) - 1);
+    buf = DPS_CreateNetRxBuffer(MAX_READ_LEN);
+    if (!buf) {
+        DPS_ERRPRINT("Create buffer failed: %s\n", DPS_ErrTxt(DPS_ERR_RESOURCES));
+        goto Exit;
+    }
+    ret = mbedtls_ssl_read(&cn->ssl, buf->rx.base, DPS_RxBufferAvail(&buf->rx));
     if (ret < 0) {
         if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) {
             DPS_DBGPRINT("Connection was closed gracefully\n");
+            switch (cn->state) {
+            case CN_OPEN:
+                cn->state = CN_CLOSE_NOTIFIED;
+            case CN_CLOSE_NOTIFIED:
+            case CN_CLOSING:
+                break;
+            }
             status = DPS_ERR_EOF;
         } else if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
             DPS_DBGPRINT("Want read cn=%p\n", cn);
@@ -1151,16 +1224,20 @@ static void TLSRecv(DPS_NetConnection* cn)
             status = DPS_ERR_NETWORK;
         }
     } else {
-        DPS_DBGPRINT("Decrypted into %d bytes of plaintext\n", ret);
-        DPS_DBGBYTES((const uint8_t*)netCtx->plainBuffer, ret);
+        buf->rx.eod = &buf->rx.base[ret];
+        DPS_DBGPRINT("Decrypted into %d bytes of plaintext\n", buf->rx.eod - buf->rx.base);
+        DPS_DBGBYTES(buf->rx.base, buf->rx.eod - buf->rx.base);
 
         status = DPS_OK;
-        data = (uint8_t*)netCtx->plainBuffer;
-        len = ret;
     }
 
-    ret = netCtx->receiveCB(netCtx->node, &cn->peer, status, data, len);
+    ret = netCtx->receiveCB(netCtx->node, &cn->peer, status, buf);
 
+    /*
+     * See comment in TLSHandshake about holding onto a reference
+     * until the incoming data is received after the handshake is
+     * complete.
+     */
     if (cn->handshake == MBEDTLS_ERR_SSL_WANT_READ) {
         assert(cn->refCount > 1);
         DPS_NetConnectionDecRef(cn);
@@ -1168,8 +1245,7 @@ static void TLSRecv(DPS_NetConnection* cn)
     }
 
 Exit:
-    memset(netCtx->plainBuffer, 0, sizeof(netCtx->plainBuffer));
-
+    DPS_NetRxBufferDecRef(buf);
     DPS_NetConnectionDecRef(cn);
 }
 
@@ -1195,7 +1271,7 @@ static int TLSHandshake(DPS_NetConnection* cn)
     case MBEDTLS_ERR_SSL_WANT_WRITE:
         break;
     default:
-        DPS_NetConnectionAddRef(cn);
+        DPS_NetConnectionIncRef(cn);
         break;
     }
 
@@ -1204,7 +1280,7 @@ static int TLSHandshake(DPS_NetConnection* cn)
 
     if (ret == MBEDTLS_ERR_SSL_HELLO_VERIFY_REQUIRED) {
         DPS_DBGPRINT("Hello verification required, resetting cn=%p\n", cn);
-        ret = ResetConnection(cn, (const struct sockaddr*)&cn->peer.addr.inaddr);
+        ret = ResetConnection(cn, (const struct sockaddr*)&cn->peer.addr.u.inaddr);
         if (ret != 0) {
             DPS_ERRPRINT("Reset connection failed - %s\n", TLSErrTxt(ret));
             ret = 0;
@@ -1246,7 +1322,7 @@ static int TLSHandshake(DPS_NetConnection* cn)
      * connection.  We want to wait until some data comes in before we
      * destroy the connection, so massage the state here.
      */
-    if (cn->type == MBEDTLS_SSL_IS_SERVER) {
+    if ((cn->type == MBEDTLS_SSL_IS_SERVER) && (cn->netCtx->state == NET_RUNNING)) {
         cn->handshake = MBEDTLS_ERR_SSL_WANT_READ;
     }
 
@@ -1269,10 +1345,10 @@ static int TLSHandshake(DPS_NetConnection* cn)
 static void ConsumePending(DPS_NetConnection* cn)
 {
     assert(cn->handshakeDone);
-    while (cn->readQueue) {
+    while (!DPS_QueueEmpty(&cn->recvQueue)) {
         TLSRecv(cn);
     }
-    while (cn->writeQueue) {
+    while (!DPS_QueueEmpty(&cn->sendQueue)) {
         TLSSend(cn);
     }
 }
@@ -1280,15 +1356,15 @@ static void ConsumePending(DPS_NetConnection* cn)
 static void OnUdpData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, const struct sockaddr* addr, unsigned flags)
 {
     DPS_NetContext* netCtx = socket->data;
-    PendingRead* pr = NULL;
+    RecvData* data = NULL;
     DPS_NodeAddress* nodeAddr = NULL;
     DPS_NetConnection* cn;
 
     DPS_DBGTRACEA("nread=%d,addr=%s\n", nread, DPS_NetAddrText(addr));
 
     assert(buf);
-    pr = CreatePendingRead(nread, buf);
-    if (!pr) {
+    data = CreateRecvData(nread, buf);
+    if (!data) {
         goto Exit;
     }
 
@@ -1304,7 +1380,7 @@ static void OnUdpData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, cons
         goto Exit;
     }
 #ifdef _WIN32
-    /* Under Windows, pr->buf.len is a ULONG, not a size_t */
+    /* Under Windows, data->buf.len is a ULONG, not a size_t */
     if (nread > ULONG_MAX) {
         goto Exit;
     }
@@ -1315,21 +1391,20 @@ static void OnUdpData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, cons
     }
 
     nodeAddr = DPS_CreateAddress();
-    DPS_SetAddress(nodeAddr, addr);
-
-    /*
-     * A node stops in two steps. It happens that in the middle of one
-     * of these steps we can receive a message, that can trigger the
-     * creation of a connection, leading to more messages to be sent
-     * to the network.
-     */
-    if (netCtx->node->state == DPS_NODE_STOPPING) {
-        DPS_DBGPRINT("Ignoring data received while stopping the node\n");
-        goto Exit;
-    }
+    DPS_NetSetAddr(nodeAddr, DPS_DTLS, addr);
 
     cn = LookupConnection(netCtx, nodeAddr);
     if (!cn) {
+        /*
+         * The network layer stops in multiple steps. It happens that
+         * in the middle of one of these steps we can receive a
+         * message, that can trigger the creation of a connection,
+         * leading to more messages to be sent to the network.
+         */
+        if (netCtx->state == NET_STOPPING) {
+            DPS_DBGPRINT("Ignoring incoming data while stopping the network\n");
+            goto Exit;
+        }
         cn = CreateConnection(netCtx->node, addr, MBEDTLS_SSL_IS_SERVER);
         if (!cn) {
             DPS_ERRPRINT("Create server connection structure failed\n");
@@ -1349,17 +1424,9 @@ static void OnUdpData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, cons
      * need to use pending again).
      */
 
-    PendingRead* q = cn->readQueue;
-    if (!q) {
-        cn->readQueue = pr;
-    } else {
-        while (q->next) {
-            q = q->next;
-        }
-        q->next = pr;
-    }
-    pr = NULL;
-    DPS_NetConnectionAddRef(cn);
+    DPS_QueuePushBack(&cn->recvQueue, &data->queue);
+    data = NULL;
+    DPS_NetConnectionIncRef(cn);
 
     if (!cn->handshakeDone) {
         int ret = TLSHandshake(cn);
@@ -1373,31 +1440,26 @@ static void OnUdpData(uv_udp_t* socket, ssize_t nread, const uv_buf_t* buf, cons
     }
 
  Exit:
-    DestroyPendingRead(pr);
+    DestroyRecvData(data);
     DPS_DestroyAddress(nodeAddr);
 }
 
-static void RxHandleClosed(uv_handle_t* handle)
-{
-    DPS_DBGPRINT("Closed Rx handle %p\n", handle);
-    free(handle->data);
-}
-
-DPS_NetContext* DPS_NetStart(DPS_Node* node, uint16_t port, DPS_OnReceive cb)
+DPS_NetContext* DPS_NetStart(DPS_Node* node, const DPS_NodeAddress* addr, DPS_OnReceive cb)
 {
     int ret;
     DPS_NetContext* netCtx;
-    struct sockaddr_storage addr;
+    struct sockaddr* sa;
+    DPS_NodeAddress any;
 
-    DPS_DBGTRACEA("node=%p,port=%d,cb=%p\n", node, port, cb);
+    DPS_DBGTRACEA("node=%p,addr=%s,cb=%p\n", node, DPS_NodeAddrToString(addr), cb);
 
-    netCtx = calloc(1, sizeof(*netCtx));
+    netCtx = calloc(1, sizeof(DPS_NetContext));
     if (!netCtx) {
         return NULL;
     }
     ret = uv_udp_init(node->loop, &netCtx->rxSocket);
     if (ret) {
-        DPS_ERRPRINT("UDP init failed- %s\n", uv_err_name(ret));
+        DPS_ERRPRINT("UDP init failed: %s\n", uv_err_name(ret));
         free(netCtx);
         return NULL;
     }
@@ -1406,12 +1468,16 @@ DPS_NetContext* DPS_NetStart(DPS_Node* node, uint16_t port, DPS_OnReceive cb)
     netCtx->handshakeTimeoutMax = MBEDTLS_SSL_DTLS_TIMEOUT_DFL_MAX;
     netCtx->node = node;
     netCtx->receiveCB = cb;
-    ret = uv_ip6_addr("::", port, (struct sockaddr_in6*)&addr);
-    if (ret) {
-        goto ErrorExit;
+    if (addr) {
+        sa = (struct sockaddr*)&addr->u.inaddr;
+    } else {
+        if (!DPS_SetAddress(&any, "[::]:0")) {
+            goto ErrorExit;
+        }
+        sa = (struct sockaddr*)&any.u.inaddr;
     }
     netCtx->rxSocket.data = netCtx;
-    ret = uv_udp_bind(&netCtx->rxSocket, (const struct sockaddr*)&addr, 0);
+    ret = uv_udp_bind(&netCtx->rxSocket, sa, 0);
     if (ret) {
         goto ErrorExit;
     }
@@ -1421,10 +1487,8 @@ DPS_NetContext* DPS_NetStart(DPS_Node* node, uint16_t port, DPS_OnReceive cb)
     }
 
     mbedtls_debug_set_threshold(DEBUG_MBEDTLS_LEVEL);
-    for (const int* cs = mbedtls_ssl_list_ciphersuites(); *cs; ++cs) {
-        DPS_DBGPRINT("  %s\n", mbedtls_ssl_get_ciphersuite_name(*cs));
-    }
 
+    netCtx->state = NET_RUNNING;
     DPS_DBGPRINT("Created netCtx=%p\n", netCtx);
     return netCtx;
 
@@ -1434,21 +1498,23 @@ ErrorExit:
     return NULL;
 }
 
-uint16_t DPS_NetGetListenerPort(DPS_NetContext* netCtx)
+DPS_NodeAddress* DPS_NetGetListenAddress(DPS_NodeAddress* addr, DPS_NetContext* netCtx)
 {
-    struct sockaddr_in6 addr;
-    int len = sizeof(addr);
+    int len;
 
     DPS_DBGTRACEA("netCtx=%p\n", netCtx);
 
+    memzero_s(addr, sizeof(DPS_NodeAddress));
     if (!netCtx) {
-        return 0;
+        return addr;
     }
-    if (uv_udp_getsockname(&netCtx->rxSocket, (struct sockaddr*)&addr, &len)) {
-        return 0;
+    addr->type = DPS_DTLS;
+    len = sizeof(struct sockaddr_in6);
+    if (uv_udp_getsockname(&netCtx->rxSocket, (struct sockaddr*)&addr->u.inaddr, &len)) {
+        return addr;
     }
-    DPS_DBGPRINT("Listener port = %d\n", ntohs(addr.sin6_port));
-    return ntohs(addr.sin6_port);
+    DPS_DBGPRINT("Listener address = %s\n", DPS_NodeAddrToString(addr));
+    return addr;
 }
 
 void DPS_NetStop(DPS_NetContext* netCtx)
@@ -1461,33 +1527,34 @@ void DPS_NetStop(DPS_NetContext* netCtx)
         return;
     }
 
-    /*
-     * To safely close the rxSocket we need to ensure that no
-     * connections will reference it.  This is done by both stopping
-     * the rxSocket and also stopping each connection's timer
-     * callback.  Once that is done, no OnData or OnTimeout callbacks
-     * will be called that reference rxSocket.  It's then safe to
-     * close the handle and delete this netCtx.
-     */
-    uv_udp_recv_stop(&netCtx->rxSocket);
-    cns = netCtx->cns;
-    while (cns) {
-        DPS_NetConnection* cn = cns;
-        cns = cns->next;
-        int active = uv_is_active((uv_handle_t*)&cn->timer);
-        uv_timer_stop(&cn->timer);
-        CancelPending(cn);
-        if (active) {
-            DPS_NetConnectionDecRef(cn);
+    if (netCtx->state == NET_RUNNING) {
+        netCtx->state = NET_STOPPING;
+        /*
+         * To safely close the rxSocket we need to ensure that no
+         * connections will reference it.
+         */
+        cns = netCtx->cns;
+        while (cns) {
+            DPS_NetConnection* cn = cns;
+            cns = cns->next;
+            CancelPending(cn);
+        }
+        /*
+         * When no connections are active we can close the rxSocket
+         * immediately.  Otherwise we must wait for FreeConnection to
+         * be called to ensure no one is using the rxSocket.
+         */
+        if (!netCtx->cns) {
+            uv_udp_recv_stop(&netCtx->rxSocket);
+            uv_close((uv_handle_t*)&netCtx->rxSocket, RxHandleClosed);
         }
     }
-    uv_close((uv_handle_t*)&netCtx->rxSocket, RxHandleClosed);
 }
 
 DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* ep, uv_buf_t* bufs, size_t numBufs,
                        DPS_NetSendComplete sendCompleteCB)
 {
-    PendingWrite* pw;
+    SendRequest* req;
 
     DPS_DBGTRACEA("node=%p,appCtx=%p,ep={addr=%s,cn=%p},bufs=%p,numBufs=%p,sendCompleteCB=%p\n",
                   node, appCtx, DPS_NodeAddrToString(&ep->addr), ep->cn, bufs, numBufs, sendCompleteCB);
@@ -1503,30 +1570,23 @@ DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* ep, uv_buf
     }
 #endif
 
-    pw = CreatePendingWrite(appCtx, bufs, numBufs, sendCompleteCB);
-    if (!pw) {
+    req = CreateSendRequest(appCtx, bufs, numBufs, sendCompleteCB);
+    if (!req) {
         return DPS_ERR_RESOURCES;
     }
 
     if (ep->cn) {
-        pw->cn = ep->cn;
-        if (ep->cn->writeQueue) {
-            PendingWrite* last = ep->cn->writeQueue;
-            while (last->next) {
-                last = last->next;
-            }
-            last->next = pw;
-            DPS_NetConnectionAddRef(ep->cn);
-        } else {
-            ep->cn->writeQueue = pw;
-            DPS_NetConnectionAddRef(ep->cn);
-            if (ep->cn->handshakeDone) {
-                TLSSend(ep->cn);
-            }
+        int queueEmpty;
+        req->cn = ep->cn;
+        queueEmpty= DPS_QueueEmpty(&ep->cn->sendQueue);
+        DPS_QueuePushBack(&ep->cn->sendQueue, &req->queue);
+        DPS_NetConnectionIncRef(ep->cn);
+        if (queueEmpty && ep->cn->handshakeDone) {
+            TLSSend(ep->cn);
         }
         return DPS_OK;
     }
-    ep->cn = CreateConnection(node, (const struct sockaddr*)&ep->addr.inaddr, MBEDTLS_SSL_IS_CLIENT);
+    ep->cn = CreateConnection(node, (const struct sockaddr*)&ep->addr.u.inaddr, MBEDTLS_SSL_IS_CLIENT);
     if (!ep->cn) {
         goto ErrorExit;
     }
@@ -1535,23 +1595,23 @@ DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* ep, uv_buf
         goto ErrorExit;
     }
     /*
-     * Add the pending write to the queue now that DPS_NetSend will
+     * Add the pending send to the queue now that DPS_NetSend will
      * return DPS_OK (the send complete callback should not be called
      * if DPS_NetSend returns an error).
      */
-    pw->cn = ep->cn;
-    ep->cn->writeQueue = pw;
-    pw = NULL;
-    DPS_NetConnectionAddRef(ep->cn);
+    req->cn = ep->cn;
+    DPS_QueuePushBack(&ep->cn->sendQueue, &req->queue);
+    req = NULL;
+    DPS_NetConnectionIncRef(ep->cn);
     if (ep->cn->handshakeDone) {
         ConsumePending(ep->cn);
     }
     /* The caller gets a ref count to own. */
-    DPS_NetConnectionAddRef(ep->cn);
+    DPS_NetConnectionIncRef(ep->cn);
     return DPS_OK;
 
  ErrorExit:
-    DestroyPendingWrite(pw);
+    DestroySendRequest(req);
     if (ep->cn && ep->cn->refCount == 0) {
         DestroyConnection(ep->cn);
     }
@@ -1559,7 +1619,7 @@ DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* ep, uv_buf
     return DPS_ERR_NETWORK;
 }
 
-void DPS_NetConnectionAddRef(DPS_NetConnection* cn)
+void DPS_NetConnectionIncRef(DPS_NetConnection* cn)
 {
     if (cn) {
         DPS_DBGTRACEA("cn=%p\n", cn);

@@ -20,14 +20,14 @@
  *-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
  */
 
-#include <stdlib.h>
-#include <string.h>
 #include <assert.h>
 #include <safe_lib.h>
-#include <dps/dps.h>
+#include <stdlib.h>
+#include <string.h>
 #include <dps/dbg.h>
-#include <dps/uuid.h>
+#include <dps/dps.h>
 #include <dps/private/network.h>
+#include <dps/uuid.h>
 #include "history.h"
 
 /*
@@ -86,7 +86,7 @@ static DPS_PubHistory* Insert(DPS_History* history, DPS_PubHistory* add)
 {
     DPS_PubHistory* curr = history->root;
     DPS_PubHistory* parent = NULL;
-    int cmp;
+    int cmp = 0;
 
     while (curr) {
         cmp = DPS_UUIDCompare(&add->id, &curr->id);
@@ -287,7 +287,8 @@ void DPS_FreshenHistory(DPS_History* history)
     uv_mutex_unlock(&history->lock);
 }
 
-DPS_Status DPS_UpdatePubHistory(DPS_History* history, DPS_UUID* pubId, uint32_t sequenceNum, uint8_t ackRequested, uint16_t ttl, DPS_NodeAddress* addr)
+DPS_Status DPS_UpdatePubHistory(DPS_History* history, DPS_UUID* pubId, uint32_t sequenceNum,
+                                uint8_t ackRequested, uint16_t ttl, DPS_NodeAddress* addr)
 {
     uint64_t now = uv_now(history->loop);
     DPS_PubHistory* phNew = calloc(1, sizeof(DPS_PubHistory));
@@ -314,7 +315,7 @@ DPS_Status DPS_UpdatePubHistory(DPS_History* history, DPS_UUID* pubId, uint32_t 
     /*
      * The address is not set in publications being sent from the local node
      */
-    if (addr->inaddr.ss_family) {
+    if (addr->type) {
         DPS_NodeAddressList **phAddr;
         for (phAddr = &ph->addrs; (*phAddr); phAddr = &(*phAddr)->next) {
             if (DPS_SameAddr(&(*phAddr)->addr, addr)) {
@@ -326,7 +327,8 @@ DPS_Status DPS_UpdatePubHistory(DPS_History* history, DPS_UUID* pubId, uint32_t 
             if ((*phAddr)) {
                 (*phAddr)->sn = sequenceNum;
                 (*phAddr)->addr = *addr;
-                DPS_DBGPRINT("Added %s to pub %s\n", DPS_NetAddrText((struct sockaddr*) &(*phAddr)->addr.inaddr), DPS_UUIDToString(pubId));
+                DPS_DBGPRINT("Added %s to pub %s\n", DPS_NodeAddrToString(&(*phAddr)->addr),
+                             DPS_UUIDToString(pubId));
             }
         }
     }

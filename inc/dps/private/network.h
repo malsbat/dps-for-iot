@@ -36,6 +36,9 @@
 extern "C" {
 #endif
 
+#define DPS_MAX_HOST_LEN    256  /**< Per RFC 1034/1035 */
+#define DPS_MAX_SERVICE_LEN  16  /**< Per RFC 6335 section 5.1 */
+
 /**
  * Opaque data structure for network-specific state
  */
@@ -69,19 +72,88 @@ typedef struct _DPS_MulticastReceiver DPS_MulticastReceiver;
 void DPS_NetFreeBufs(uv_buf_t* bufs, size_t numBufs);
 
 /**
+ * A reference counted receive buffer
+ */
+typedef struct _DPS_NetRxBuffer {
+    DPS_RxBuffer rx;            /**< The receive buffer */
+    void* userData;             /**< Custom allocator data */
+    uint32_t refCount;          /**< The reference count */
+    uint8_t data[1];            /**< The buffer data */
+} DPS_NetRxBuffer;
+
+/**
+ * Allocate a buffer for receiving data.
+ *
+ * The buffer is created with a reference count of 1.
+ * DPS_NetRxBufferDecRef() must be called to free it.
+ *
+ * @param len The desired length
+ *
+ * @return The created buffer or NULL if the allocation failed
+ */
+DPS_NetRxBuffer* DPS_CreateNetRxBuffer(size_t len);
+
+/**
+ * Increment the reference count of a buffer.
+ *
+ * @param buf The buffer
+ */
+void DPS_NetRxBufferIncRef(DPS_NetRxBuffer* buf);
+
+/**
+ * Decrement the reference count of a buffer.
+ *
+ * @param buf The buffer
+ */
+void DPS_NetRxBufferDecRef(DPS_NetRxBuffer* buf);
+
+/**
+ * Return a DPS_RxBuffer* from a uv_buf_t*
+ */
+#define DPS_UvToNetRxBuffer(uvBuf)                            \
+    ((DPS_NetRxBuffer*)(((uvBuf)->base) - offsetof(DPS_NetRxBuffer, data)))
+
+/**
+ * Custom DPS_NetRxBuffer allocate handler
+ *
+ * @param len The number of bytes requested
+ *
+ * @return a DPS_NetRxBuffer.  Only the userData needs to be
+ *         initialized by the handler, the other fields are
+ *         initialized by the caller.
+ */
+typedef DPS_NetRxBuffer* (*DPS_AllocNetRxBufferHandler)(size_t len);
+
+/**
+ * Custom DPS_NetRxBuffer free handler
+ *
+ * @param buf The buf to free
+ */
+typedef void (*DPS_FreeNetRxBufferHandler)(DPS_NetRxBuffer* buf);
+
+/**
+ * Installs custom allocate and free handlers for DPS_NetRxBuffers.
+ *
+ * @param allocHandler The allocate handler
+ * @param freeHandler The free handler
+ */
+void DPS_SetNetRxBufferHandlers(DPS_AllocNetRxBufferHandler allocHandler,
+                                DPS_FreeNetRxBufferHandler freeHandler);
+
+/**
  * Function prototype for handler to be called on receiving data from a remote node
  *
  * @param node      The node that received the data
  * @param endpoint  The endpoint that received the data
  * @param status    Indicates if the receive was successful or there was a network layer error
- * @param data      The raw data
- * @param len       Length of the raw data
+ * @param rxBuf     The data
  *
  * @return
  * - DPS_OK if the message was correctly parsed
  * - An error code indicating the data received was invalid
  */
-typedef DPS_Status (*DPS_OnReceive)(DPS_Node* node, DPS_NetEndpoint* endpoint, DPS_Status status, const uint8_t* data, size_t len);
+typedef DPS_Status (*DPS_OnReceive)(DPS_Node* node, DPS_NetEndpoint* endpoint, DPS_Status status,
+                                    DPS_NetRxBuffer* rxBuf);
 
 /**
  * Set the port number on a network endpoint.
@@ -95,6 +167,15 @@ typedef DPS_Status (*DPS_OnReceive)(DPS_Node* node, DPS_NetEndpoint* endpoint, D
  * @param port      The port number to set on the endpoint
  */
 void DPS_EndpointSetPort(DPS_NetEndpoint* endpoint, uint16_t port);
+
+/**
+ * Set the path on a network endpoint.
+ *
+ * @param endpoint  The endpoint to set
+ * @param path      The path to set on the endpoint
+ * @param pathLen   The size of the path
+ */
+void DPS_EndpointSetPath(DPS_NetEndpoint* endpoint, char* path, size_t pathLen);
 
 /**
  * Send a message locally, short-circuiting the transport layer.
@@ -151,12 +232,13 @@ void DPS_MulticastStopSend(DPS_MulticastSender* sender);
  *
  * @param sender   Opaque pointer to the struct holding the state of the multicast sender
  * @param appCtx   Application context pointer that was passed into DPS_MulticastSend()
- * @param bufs     Array holding pointers to the buffers passed in the send API call. The data in these buffers
- *                 can now be freed.
+ * @param bufs     Array holding pointers to the buffers passed in the send API call. The data in these
+ *                 buffers can now be freed.
  * @param numBufs  The length of the bufs array
  * @param status   Indicates if the send was successful or not
  */
-typedef void (*DPS_MulticastSendComplete)(DPS_MulticastSender* sender, void* appCtx, uv_buf_t* bufs, size_t numBufs, DPS_Status status);
+typedef void (*DPS_MulticastSendComplete)(DPS_MulticastSender* sender, void* appCtx, uv_buf_t* bufs,
+                                          size_t numBufs, DPS_Status status);
 
 /**
  * Multicast some data.
@@ -165,34 +247,37 @@ typedef void (*DPS_MulticastSendComplete)(DPS_MulticastSender* sender, void* app
  * @param appCtx          An application context to be passed to the send complete callback
  * @param bufs            Data buffers to send
  * @param numBufs         Number of buffers to send
- * @param sendCompleteCB  Function called when the send is complete so the content of the data buffers can be freed.
+ * @param sendCompleteCB  Function called when the send is complete so the content of the data buffers
+ *                        can be freed.
  *
  * @return
  * - DPS_OK if send is successful,
  * - DPS_ERR_NO_ROUTE if no interfaces are usable for multicast,
  * - an error otherwise
  */
-DPS_Status DPS_MulticastSend(DPS_MulticastSender* sender, void* appCtx, uv_buf_t* bufs, size_t numBufs, DPS_MulticastSendComplete sendCompleteCB);
+DPS_Status DPS_MulticastSend(DPS_MulticastSender* sender, void* appCtx, uv_buf_t* bufs, size_t numBufs,
+                             DPS_MulticastSendComplete sendCompleteCB);
 
 /**
  * Start listening and receiving data
  *
  * @param node  Opaque pointer to the DPS node
- * @param port  If non-zero the port number to listen on, if zero use an ephemeral port
+ * @param addr  If non-NULL the address to listen on, if NULL use an ephemeral address
  * @param cb    Function to call when data is received
  *
  * @return   Returns a pointer to an opaque data structure that holds the state of the netCtx.
  */
-DPS_NetContext* DPS_NetStart(DPS_Node* node, uint16_t port, DPS_OnReceive cb);
+DPS_NetContext* DPS_NetStart(DPS_Node* node, const DPS_NodeAddress* addr, DPS_OnReceive cb);
 
 /**
- * Get the port the netCtx is listening on
+ * Get the address the netCtx is listening on
  *
+ * @param addr    The address to set
  * @param netCtx  Pointer to an opaque data structure that holds the state of the netCtx.
  *
- * @return the port
+ * @return The addr passed in.
  */
-uint16_t DPS_NetGetListenerPort(DPS_NetContext* netCtx);
+DPS_NodeAddress* DPS_NetGetListenAddress(DPS_NodeAddress* addr, DPS_NetContext* netCtx);
 
 /**
  * Stop listening for data
@@ -206,29 +291,36 @@ void DPS_NetStop(DPS_NetContext* netCtx);
  * Prototype for function called when a send completes.
  *
  * @param node     Opaque pointer to the DPS node
- * @param appCtx   Application context pointer that was passed into DPS_NetSend()
+ * @param appCtx   Application context pointer that was passed into
+ *                 DPS_NetSend()
  * @param endpoint The endpoint for which the send was complete
- * @param bufs     Array holding pointers to the buffers passed in the send API call. The data in these buffers
- *                 can now be freed.
+ * @param bufs     Array holding pointers to the buffers passed in the
+ *                 send API call. The data in these buffers can now be
+ *                 freed.
  * @param numBufs  The length of the bufs array
  * @param status   Indicates if the send was successful or not
  */
-typedef void (*DPS_NetSendComplete)(DPS_Node* node, void* appCtx, DPS_NetEndpoint* endpoint, uv_buf_t* bufs, size_t numBufs, DPS_Status status);
+typedef void (*DPS_NetSendComplete)(DPS_Node* node, void* appCtx, DPS_NetEndpoint* endpoint,
+                                    uv_buf_t* bufs, size_t numBufs, DPS_Status status);
 
 /**
  * Send data to a specific endpoint.
  *
  * @param node            Pointer to the DPS node
- * @param appCtx          An application context to be passed to the send complete callback
- * @param endpoint        The endpoint to send to - note this may be updated with connection state
- *                        information.
- * @param bufs            Data buffers to send, the data in the buffers must be live until the send completes.
+ * @param appCtx          An application context to be passed to the send
+ *                        complete callback
+ * @param endpoint        The endpoint to send to - note this may be updated
+ *                        with connection state information.
+ * @param bufs            Data buffers to send, the data in the buffers must be
+ *                        live until the send completes.
  * @param numBufs         Number of buffers to send
- * @param sendCompleteCB  Function called when the send is complete so the content of the data buffers can be freed.
+ * @param sendCompleteCB  Function called when the send is complete so
+ *                        the content of the data buffers can be freed.
  *
  * @return DPS_OK if the send is successful, an error otherwise
  */
-DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* endpoint, uv_buf_t* bufs, size_t numBufs, DPS_NetSendComplete sendCompleteCB);
+DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* endpoint,
+                       uv_buf_t* bufs, size_t numBufs, DPS_NetSendComplete sendCompleteCB);
 
 /**
  * Increment the reference count to potentially keeping a underlying connection alive. This is only
@@ -236,7 +328,7 @@ DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* endpoint, 
  *
  * @param cn    Connection to be add'refd
  */
-void DPS_NetConnectionAddRef(DPS_NetConnection* cn);
+void DPS_NetConnectionIncRef(DPS_NetConnection* cn);
 
 /**
  * Decrement the reference count on a connection potentially allowing an underlying connection to be
@@ -268,6 +360,27 @@ int DPS_SameAddr(const DPS_NodeAddress* addr1, const DPS_NodeAddress* addr2);
 const char* DPS_NetAddrText(const struct sockaddr* addr);
 
 /**
+ * Returns port of an address
+ *
+ * @param addr  The address
+ *
+ * @return The port
+ */
+uint16_t DPS_NetAddrPort(const struct sockaddr* addr);
+
+/**
+ * Set a node address
+ *
+ * @param addr  The address to set
+ * @param type  The IP address type
+ * @param sa    The value to set
+ *
+ * @return The addr passed in.
+ */
+DPS_NodeAddress* DPS_NetSetAddr(DPS_NodeAddress* addr, DPS_NodeAddressType type,
+                                const struct sockaddr* sa);
+
+/**
  * Maps the supplied address to a v6 address if needed.
  *
  * This is necessary when using dual-stack sockets.
@@ -275,6 +388,20 @@ const char* DPS_NetAddrText(const struct sockaddr* addr);
  * @param addr  The address
  */
 void DPS_MapAddrToV6(struct sockaddr* addr);
+
+/**
+ * Split address text into host and service parts
+ *
+ * @param addrText The address text
+ * @param host The host part
+ * @param hostLen Size of the host part
+ * @param service The service part
+ * @param serviceLen Size of the service part
+ *
+ * @return DPS_OK if the split succeeds, an error otherwise
+ */
+DPS_Status DPS_SplitAddress(const char* addrText, char* host, size_t hostLen,
+                            char* service, size_t serviceLen);
 
 #ifdef __cplusplus
 }

@@ -3,7 +3,9 @@ LIBRARY dps_shared
 EXPORTS
 
 DPS_AckGetSenderKeyId
+DPS_AckGetSequenceNum
 DPS_AckPublication
+DPS_AckPublicationBufs
 DPS_CBOR2JSON
 DPS_CopyAddress
 DPS_CopyPublication
@@ -28,8 +30,9 @@ DPS_ErrTxt
 DPS_GenerateUUID
 DPS_GetEventData
 DPS_GetKeyStoreData
+DPS_GetListenAddress
+DPS_GetListenAddressString
 DPS_GetNodeData
-DPS_GetPortNumber
 DPS_GetPublicationData
 DPS_GetSubscriptionData
 DPS_InitPublication
@@ -43,16 +46,17 @@ DPS_LogBytes
 DPS_MemoryKeyStoreHandle
 DPS_NodeAddrToString
 DPS_PublicationAddSubId
-DPS_PublicationConfigureQoS
 DPS_PublicationGetNode
 DPS_PublicationGetNumTopics
 DPS_PublicationGetSenderKeyId
 DPS_PublicationGetSequenceNum
 DPS_PublicationGetTopic
+DPS_PublicationGetTTL
 DPS_PublicationGetUUID
 DPS_PublicationIsAckRequested
 DPS_PublicationRemoveSubId
 DPS_Publish
+DPS_PublishBufs
 DPS_Registration_Get
 DPS_Registration_GetSyn
 DPS_Registration_LinkTo
@@ -78,6 +82,7 @@ DPS_SetTrustedCA
 DPS_SignalEvent
 DPS_StartNode
 DPS_Subscribe
+DPS_SubscribeExpired
 DPS_SubscriptionGetNode
 DPS_SubscriptionGetNumTopics
 DPS_SubscriptionGetTopic

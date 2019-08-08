@@ -7,37 +7,41 @@ compiler:
   - gcc
 
 env:
-  - VARIANT=debug TRANSPORT=udp ASAN=yes FSAN=no
-  - VARIANT=debug TRANSPORT=tcp ASAN=yes FSAN=no
-  - VARIANT=debug TRANSPORT=dtls ASAN=yes FSAN=no
-  - VARIANT=release TRANSPORT=udp ASAN=yes FSAN=no
-  - VARIANT=release TRANSPORT=tcp ASAN=yes FSAN=no
-  - VARIANT=release TRANSPORT=dtls ASAN=yes FSAN=no
-  - VARIANT=release TRANSPORT=dtls ASAN=yes FSAN=yes
-  - VARIANT=release TRANSPORT=fuzzer ASAN=yes FSAN=yes
-
+  - VARIANT=debug TRANSPORT=udp BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=debug TRANSPORT=tcp BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=debug TRANSPORT=dtls BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=debug TRANSPORT=pipe BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=release TRANSPORT=udp BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=release TRANSPORT=tcp BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=release TRANSPORT=dtls BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=release TRANSPORT=dtls BINDINGS=python,nodejs ASAN=yes FSAN=yes
+  - VARIANT=release TRANSPORT=pipe BINDINGS=all ASAN=yes FSAN=no
+  - VARIANT=release TRANSPORT=fuzzer BINDINGS=python,nodejs ASAN=yes FSAN=yes
+  - FROM_UPSTREAM=true
 matrix:
   exclude:
     - compiler: clang
     - compiler: gcc
-      env: VARIANT=release TRANSPORT=dtls ASAN=yes FSAN=yes
+      env: VARIANT=release TRANSPORT=dtls BINDINGS=python,nodejs ASAN=yes FSAN=yes
     - compiler: gcc
-      env: VARIANT=release TRANSPORT=fuzzer ASAN=yes FSAN=yes
+      env: VARIANT=release TRANSPORT=fuzzer BINDINGS=python,nodejs ASAN=yes FSAN=yes
   include:
     - compiler: clang
-      env: VARIANT=release TRANSPORT=dtls ASAN=yes FSAN=yes
+      env: VARIANT=release TRANSPORT=dtls BINDINGS=python,nodejs ASAN=yes FSAN=yes
     - compiler: clang
-      env: VARIANT=release TRANSPORT=fuzzer ASAN=yes FSAN=yes
+      env: VARIANT=release TRANSPORT=fuzzer BINDINGS=python,nodejs ASAN=yes FSAN=yes
 
 addons:
   apt:
     sources:
       - ubuntu-toolchain-r-test
-      - llvm-toolchain-trusty-6.0
+      - llvm-toolchain-xenial-6.0
     packages:
       - clang-6.0
       - doxygen
       - g++-7
+      - nasm
+      - scons
       - zlib1g-dev
 
 before_install:
@@ -51,5 +55,9 @@ install:
   - pip install --user pexpect
 
 script:
-  - scons CC=$CC CXX=$CXX variant=$VARIANT transport=$TRANSPORT asan=$ASAN ubsan=yes fsan=$FSAN
-  - ./test_scripts/run.py -d
+  - if [ "$FROM_UPSTREAM" != true ]; then 
+      scons CC=$CC CXX=$CXX variant=$VARIANT transport=$TRANSPORT bindings=$BINDINGS asan=$ASAN ubsan=yes fsan=$FSAN;
+      ./test_scripts/run.py -d;
+    else
+      ./.travis/upstream-check.sh;
+    fi

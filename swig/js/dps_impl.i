@@ -52,13 +52,21 @@ static int AsVal_bytes(Handle obj, uint8_t** bytes, size_t* len)
         }
     } else if (obj->IsString()) {
         v8::Local<v8::String> str = v8::Local<v8::String>::Cast(obj);
-        (*len) =str->Utf8Length();
+        (*len) = str->Utf8Length();
         (*bytes) = new uint8_t[*len + 1];
         str->WriteUtf8((char*)(*bytes));
     } else if (!obj->IsNull()) {
         return SWIG_TypeError;
     }
-    return SWIG_OK;
+    return SWIG_NEWOBJ;
+}
+
+/*
+ * AsVal_bytes always returns a mutable object
+ */
+static int AsSafeVal_bytes(Handle obj, uint8_t** bytes, size_t* len)
+{
+    return AsVal_bytes(obj, bytes, len);
 }
 
 static Handle From_bytes(const uint8_t* bytes, size_t len)
@@ -314,7 +322,7 @@ public:
     const DPS_Node* m_node;
     DPS_NodeAddress* m_addr;
     Handler* m_handler;
-    NodeAddressCompleteCallback(DPS_Node* node, DPS_NodeAddress* addr, void* data)
+    NodeAddressCompleteCallback(DPS_Node* node, const DPS_NodeAddress* addr, void* data)
         : m_node(node), m_addr(DPS_CreateAddress()), m_handler((Handler*)data) {
         DPS_CopyAddress(m_addr, addr);
     }
@@ -331,7 +339,7 @@ public:
     }
 };
 
-static void OnNodeAddressComplete(DPS_Node* node, DPS_NodeAddress* addr, void* data)
+static void OnNodeAddressComplete(DPS_Node* node, const DPS_NodeAddress* addr, void* data)
 {
     sync_send(new NodeAddressCompleteCallback(node, addr, data));
 }

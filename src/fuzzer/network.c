@@ -21,6 +21,7 @@
  */
 
 #include <stdlib.h>
+#include <string.h>
 #include <dps/dbg.h>
 #include <dps/private/network.h>
 #include "../node.h"
@@ -44,7 +45,7 @@ struct _DPS_MulticastSender {
     DPS_Node* node;
 };
 
-DPS_NetContext* DPS_NetStart(DPS_Node* node, uint16_t port, DPS_OnReceive cb)
+DPS_NetContext* DPS_NetStart(DPS_Node* node, const DPS_NodeAddress* addr, DPS_OnReceive cb)
 {
     DPS_NetContext* netCtx = NULL;
 
@@ -61,9 +62,17 @@ void DPS_NetStop(DPS_NetContext* netCtx)
     free(netCtx);
 }
 
-uint16_t DPS_NetGetListenerPort(DPS_NetContext* netCtx)
+DPS_NodeAddress* DPS_NetGetListenAddress(DPS_NodeAddress* addr, DPS_NetContext* netCtx)
 {
-    return 10000;
+    struct sockaddr_in6* saddr;
+
+    memzero_s(addr, sizeof(DPS_NodeAddress));
+    addr->type = DPS_UDP;
+    saddr = (struct sockaddr_in6*)&addr->u.inaddr;
+    saddr->sin6_family = AF_INET6;
+    saddr->sin6_port = 10000;
+    memcpy(&saddr->sin6_addr, &in6addr_any, sizeof(saddr->sin6_addr));
+    return addr;
 }
 
 DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* endpoint,
@@ -73,7 +82,7 @@ DPS_Status DPS_NetSend(DPS_Node* node, void* appCtx, DPS_NetEndpoint* endpoint,
     return DPS_ERR_NOT_IMPLEMENTED;
 }
 
-void DPS_NetConnectionAddRef(DPS_NetConnection* cn)
+void DPS_NetConnectionIncRef(DPS_NetConnection* cn)
 {
 }
 
@@ -123,22 +132,38 @@ void Fuzz_OnNetReceive(DPS_Node* node, const uint8_t* data, size_t len)
 {
     DPS_NetEndpoint ep;
     struct sockaddr_in sa;
+    DPS_NetRxBuffer* buf;
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    DPS_SetAddress(&ep.addr, (const struct sockaddr *)&sa);
+    DPS_NetSetAddr(&ep.addr, DPS_UDP, (const struct sockaddr *)&sa);
     DPS_EndpointSetPort(&ep, 10001);
     ep.cn = NULL;
-    node->netCtx->receiveCB(node, &ep, DPS_OK, data, len);
+    buf = DPS_CreateNetRxBuffer(len);
+    if (!buf) {
+        DPS_ERRPRINT("Create buffer failed\n");
+        return;
+    }
+    memcpy(buf->rx.rxPos, data, len);
+    node->netCtx->receiveCB(node, &ep, DPS_OK, buf);
+    DPS_NetRxBufferDecRef(buf);
 }
 
 void Fuzz_OnMulticastReceive(DPS_Node* node, const uint8_t* data, size_t len)
 {
     DPS_NetEndpoint ep;
     struct sockaddr_in sa;
+    DPS_NetRxBuffer* buf;
     sa.sin_family = AF_INET;
     sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    DPS_SetAddress(&ep.addr, (const struct sockaddr *)&sa);
+    DPS_NetSetAddr(&ep.addr, DPS_UDP, (const struct sockaddr *)&sa);
     DPS_EndpointSetPort(&ep, 10001);
     ep.cn = NULL;
-    node->mcastReceiver->receiveCB(node, &ep, DPS_OK, data, len);
+    buf = DPS_CreateNetRxBuffer(len);
+    if (!buf) {
+        DPS_ERRPRINT("Create buffer failed\n");
+        return;
+    }
+    memcpy(buf->rx.rxPos, data, len);
+    node->mcastReceiver->receiveCB(node, &ep, DPS_OK, buf);
+    DPS_NetRxBufferDecRef(buf);
 }

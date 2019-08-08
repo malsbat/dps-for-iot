@@ -57,7 +57,8 @@ extern "C" {
 typedef struct _DPS_NodeAddress DPS_NodeAddress;
 
 /**
- * Get text representation of an address. This function uses a static string buffer so is not thread safe.
+ * Get text representation of an address. This function uses a static
+ * string buffer so is not thread safe.
  *
  * @param addr to get the text for
  *
@@ -70,17 +71,17 @@ const char* DPS_NodeAddrToString(const DPS_NodeAddress* addr);
  *
  * @return The created address, or NULL if creation failed
  */
-DPS_NodeAddress* DPS_CreateAddress();
+DPS_NodeAddress* DPS_CreateAddress(void);
 
 /**
  * Set a node address
  *
- * @param addr  The address to set
- * @param sa    The value to set
+ * @param addr        The address to set
+ * @param addrText    The text string for the address
  *
- * @return The addr passed in.
+ * @return The addr passed in, or NULL if an error occurred
  */
-DPS_NodeAddress* DPS_SetAddress(DPS_NodeAddress* addr, const struct sockaddr* sa);
+DPS_NodeAddress* DPS_SetAddress(DPS_NodeAddress* addr, const char* addrText);
 
 /**
  * Copy a node address
@@ -366,7 +367,7 @@ typedef struct _DPS_MemoryKeyStore DPS_MemoryKeyStore;
  *
  * @return The key store or NULL if there were no resources.
  */
-DPS_MemoryKeyStore* DPS_CreateMemoryKeyStore();
+DPS_MemoryKeyStore* DPS_CreateMemoryKeyStore(void);
 
 /**
  * Destroys a previously created in-memory key store.
@@ -497,11 +498,11 @@ void* DPS_GetNodeData(const DPS_Node* node);
  *
  * @param node         The node
  * @param mcastPub     Indicates if this node sends or listens for multicast publications
- * @param listenPort   If non-zero identifies specific port to listen on
+ * @param listenAddr   If non-NULL identifies specific address to listen on
  *
  * @return DPS_OK or various error status codes
  */
-DPS_Status DPS_StartNode(DPS_Node* node, int mcastPub, uint16_t listenPort);
+DPS_Status DPS_StartNode(DPS_Node* node, int mcastPub, DPS_NodeAddress* listenAddr);
 
 /**
  * Function prototype for callback function called when a node is destroyed.
@@ -541,13 +542,24 @@ DPS_Status DPS_DestroyNode(DPS_Node* node, DPS_OnNodeDestroyed cb, void* data);
 void DPS_SetNodeSubscriptionUpdateDelay(DPS_Node* node, uint32_t subsRateMsecs);
 
 /**
- * Get the port number this node is listening for connections on
+ * Get the address this node is listening for connections on
  *
- * @param node     The local node to use
+ * @param node     The node
  *
- * @return The port number
+ * @return The address
  */
-uint16_t DPS_GetPortNumber(DPS_Node* node);
+const DPS_NodeAddress* DPS_GetListenAddress(DPS_Node* node);
+
+/**
+ * Get text representation of the address this node is listening for
+ * connections on. This function uses a static string buffer so is not
+ * thread safe.
+ *
+ * @param node     The node
+ *
+ * @return A text string for the address
+ */
+const char* DPS_GetListenAddressString(DPS_Node* node);
 
 /**
  * Function prototype for function called when a DPS_Link() completes.
@@ -562,14 +574,14 @@ typedef void (*DPS_OnLinkComplete)(DPS_Node* node, DPS_NodeAddress* addr, DPS_St
 /**
  * Link the local node to a remote node
  *
- * @param node   The local node to use
- * @param addr   The address of the remote node to link to
- * @param cb     The callback function to call on completion, can be NULL which case the function is synchronous
- * @param data   Application data to be passed to the callback
+ * @param node     The local node to use
+ * @param addrText The text string of the address to link to
+ * @param cb       The callback function to call on completion, can be NULL which case the function is synchronous
+ * @param data     Application data to be passed to the callback
  *
  * @return DPS_OK or an error status. If an error status is returned the callback function will not be called.
  */
-DPS_Status DPS_Link(DPS_Node* node, DPS_NodeAddress* addr, DPS_OnLinkComplete cb, void* data);
+DPS_Status DPS_Link(DPS_Node* node, const char* addrText, DPS_OnLinkComplete cb, void* data);
 
 /**
  * Function prototype for function called when a DPS_Unlink() completes.
@@ -578,7 +590,7 @@ DPS_Status DPS_Link(DPS_Node* node, DPS_NodeAddress* addr, DPS_OnLinkComplete cb
  * @param addr   The address of the remote node that was unlinked
  * @param data   Application data passed in the call to DPS_Unlink()
  */
-typedef void (*DPS_OnUnlinkComplete)(DPS_Node* node, DPS_NodeAddress* addr, void* data);
+typedef void (*DPS_OnUnlinkComplete)(DPS_Node* node, const DPS_NodeAddress* addr, void* data);
 
 /**
  * Unlink the local node from a remote node
@@ -590,7 +602,7 @@ typedef void (*DPS_OnUnlinkComplete)(DPS_Node* node, DPS_NodeAddress* addr, void
  *
  * @return DPS_OK or an error status. If an error status is returned the callback function will not be called.
  */
-DPS_Status DPS_Unlink(DPS_Node* node, DPS_NodeAddress* addr, DPS_OnUnlinkComplete cb, void* data);
+DPS_Status DPS_Unlink(DPS_Node* node, const DPS_NodeAddress* addr, DPS_OnUnlinkComplete cb, void* data);
 
 /**
  * Function prototype for function called when a DPS_ResolveAddress() completes.
@@ -599,7 +611,7 @@ DPS_Status DPS_Unlink(DPS_Node* node, DPS_NodeAddress* addr, DPS_OnUnlinkComplet
  * @param addr   The resolved address or NULL if the address could not be resolved
  * @param data   Application data passed in the call to DPS_ResolveAddress()
  */
-typedef void (*DPS_OnResolveAddressComplete)(DPS_Node* node, DPS_NodeAddress* addr, void* data);
+typedef void (*DPS_OnResolveAddressComplete)(DPS_Node* node, const DPS_NodeAddress* addr, void* data);
 
 /**
  * Resolve a host name or IP address and service name or port number.
@@ -644,6 +656,15 @@ const DPS_UUID* DPS_PublicationGetUUID(const DPS_Publication* pub);
  * @return The sequence number or zero if the publication is invalid.
  */
 uint32_t DPS_PublicationGetSequenceNum(const DPS_Publication* pub);
+
+/**
+ * Get the TTL for a publication.
+ *
+ * @param pub   The publication
+ *
+ * @return Time to live in seconds - maximum TTL is about 9 hours
+ */
+int16_t DPS_PublicationGetTTL(const DPS_Publication* pub);
 
 /**
  * Get a topic for a publication
@@ -740,7 +761,7 @@ void* DPS_GetPublicationData(const DPS_Publication* pub);
  *
  * @param pub      Opaque handle for the publication that was received
  * @param payload  Payload accompanying the acknowledgement if any
- * @param len   Length of the payload
+ * @param len      Length of the payload
  */
 typedef void (*DPS_AcknowledgementHandler)(DPS_Publication* pub, uint8_t* payload, size_t len);
 
@@ -768,24 +789,6 @@ DPS_Status DPS_InitPublication(DPS_Publication* pub,
                                int noWildCard,
                                const DPS_KeyId* keyId,
                                DPS_AcknowledgementHandler handler);
-
-/**
- * The Quality-of-Service (QoS) parameters
- */
-typedef struct _DPS_QoS {
-    /** The maximum number of past and future publications to keep in this series. */
-     size_t historyDepth;
-} DPS_QoS;
-
-/**
- * Configure the Quality-of-Service (QoS) parameters of a publication.
- *
- * @param pub          The publication to initialize
- * @param qos          The QoS parameters
- *
- * @return DPS_OK if configuration is successful, an error otherwise
- */
-DPS_Status DPS_PublicationConfigureQoS(DPS_Publication* pub, const DPS_QoS* qos);
 
 /**
  * Adds a key identifier to use for encrypted publications.
@@ -824,8 +827,54 @@ void DPS_PublicationRemoveSubId(DPS_Publication* pub, const DPS_KeyId* keyId);
 DPS_Status DPS_Publish(DPS_Publication* pub, const uint8_t* pubPayload, size_t len, int16_t ttl);
 
 /**
+ * A buffer.
+ */
+typedef struct _DPS_Buffer {
+    uint8_t* base;              /**< Pointer to the base of the buffer */
+    size_t len;                 /**< Length of the buffer */
+} DPS_Buffer;
+
+/**
+ * Called when DPS_PublishBufs() completes.
+ *
+ * @param pub     The publication
+ * @param bufs    The payload buffers passed to DPS_PublishBufs()
+ * @param numBufs The number of payload buffers passed to DPS_PublishBufs()
+ * @param status  The status of the publish
+ * @param data    Application data passed to DPS_PublishBufs()
+ */
+typedef void (*DPS_PublishBufsComplete)(DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs,
+                                        DPS_Status status, void* data);
+
+/**
+ * Publish a set of topics along with an optional payload. The topics will be published immediately
+ * to matching subscribers and then re-published whenever a new matching subscription is received.
+ *
+ * Call the accessor function DPS_PublicationGetUUID() to get the UUID for this publication.  Call
+ * the accessor function DPS_PublicationGetSequenceNum() to get the current sequence number for this
+ * publication. The sequence number is incremented each time DPS_Publish() is called for the same
+ * publication.
+ *
+ * @note When the ttl is greater than zero, the callback function will not be called until the
+ * publication expires, is replaced by a subsequent call to DPS_PublishBufs(), is canceled, or is
+ * destroyed.
+ *
+ * @param pub          The publication to send
+ * @param bufs         Optional payload buffers - this memory must remain valid until the callback
+ *                     function is called
+ * @param numBufs      The number of buffers
+ * @param ttl          Time to live in seconds - maximum TTL is about 9 hours
+ * @param cb           Callback function called when the publish is complete
+ * @param data         Data to be passed to the callback function
+ *
+ * @return DPS_OK if the topics were successfully published
+ */
+DPS_Status DPS_PublishBufs(DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs, int16_t ttl,
+                           DPS_PublishBufsComplete cb, void* data);
+
+/**
  * Delete a publication and frees any resources allocated. This does not cancel retained publications
- * that have an unexpired TTL. To expire a retained publication call DPS_Publish() with a zero TTL.
+ * that have an unexpired TTL. To expire a retained publication call DPS_Publish() with a negative TTL.
  *
  * This function should only be called for publications created by DPS_CreatePublication() or
  * DPS_CopyPublication().
@@ -849,6 +898,46 @@ DPS_Status DPS_DestroyPublication(DPS_Publication* pub);
  * @return DPS_OK if acknowledge is successful, an error otherwise
  */
 DPS_Status DPS_AckPublication(const DPS_Publication* pub, const uint8_t* ackPayload, size_t len);
+
+/**
+ * Called when DPS_AckPublicationBufs() completes.
+ *
+ * @param pub     The publication
+ * @param bufs    The payload buffers passed to DPS_AckPublicationBufs()
+ * @param numBufs The number of payload buffers passed to DPS_AckPublicationBufs()
+ * @param status  The status of the publish
+ * @param data    Application data passed to DPS_AckPublicationBufs()
+ */
+typedef void (*DPS_AckPublicationBufsComplete)(DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs,
+                                               DPS_Status status, void* data);
+
+/**
+ * Acknowledge a publication. A publication should be acknowledged as soon as possible after receipt,
+ * ideally from within the publication handler callback function. If the publication cannot be
+ * acknowledged immediately in the publication handler callback, call DPS_CopyPublication() to make a
+ * partial copy of the publication that can be passed to this function at a later time.
+ *
+ * @param pub           The publication to acknowledge
+ * @param bufs          Optional payload buffers - this memory must remain valid until the callback
+ *                      function is called
+ * @param numBufs       The number of buffers
+ * @param cb            Callback function called when the acknowledge is complete
+ * @param data          Data to be passed to the callback function
+ *
+ * @return DPS_OK if acknowledge is successful, an error otherwise
+ */
+DPS_Status DPS_AckPublicationBufs(const DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs,
+                                  DPS_AckPublicationBufsComplete cb, void* data);
+
+/**
+ * Get the sequence number being acknowledged, only valid with the
+ * body of the DPS_AcknowledgementHandler function.
+ *
+ * @param pub   The pub parameter of DPS_AcknowledgementHandler
+ *
+ * @return The sequence number of the acknowledged publication.
+ */
+uint32_t DPS_AckGetSequenceNum(const DPS_Publication* pub);
 
 /**
  * Get the key identifier of an acknowledgement, only valid with the
@@ -931,6 +1020,19 @@ void* DPS_GetSubscriptionData(DPS_Subscription* sub);
  * @return The node or NULL if the subscription is invalid
  */
 DPS_Node* DPS_SubscriptionGetNode(const DPS_Subscription* sub);
+
+/**
+ * Call the publication handler when a matching retained publication expires.
+ *
+ * DPS_PublicationGetTTL() will return a negative value when the
+ * publication is expired.
+ *
+ * @param sub     The subscription
+ * @param enable  DPS_TRUE to call handler, DPS_FALSE to not call handler
+ *
+ * @return DPS_OK or an error
+ */
+DPS_Status DPS_SubscribeExpired(DPS_Subscription* sub, int enable);
 
 /**
  * Function prototype for a publication handler called when a publication is received that

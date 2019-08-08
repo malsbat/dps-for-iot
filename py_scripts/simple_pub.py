@@ -1,5 +1,7 @@
 #!/usr/bin/python
 import dps
+import sys
+import threading
 import time
 
 # Pre-shared keys for testing only. DO NOT USE THESE KEYS IN A REAL APPLICATION!
@@ -93,10 +95,16 @@ import argparse
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--debug", action='store_true',
                     help="Enable debug ouput if built for debug.")
-parser.add_argument("-x", "--encryption", type=int, choices=[0,1,2], default=1,
-                    help="Disable (0) or enable symmetric (1) or asymmetric(2) encryption. Default is symmetric encryption enabled.")
+parser.add_argument("-x", "--encryption", type=int, choices=[0,1,2,3], default=1,
+                    help="Disable (0) or enable symmetric encryption (1), asymmetric encryption (2), or authentication (3). Default is symmetric encryption enabled.")
+parser.add_argument("-l", "--listen", default=None,
+                    help="Address to listen on for incoming connections.")
+parser.add_argument("-p", "--port", default=None,
+                    help="Address to link to.")
+
 args = parser.parse_args()
 dps.cvar.debug = args.debug
+mcast = dps.MCAST_PUB_ENABLE_SEND
 
 key_store = dps.create_memory_key_store()
 dps.set_network_key(key_store, network_key_id, network_key)
@@ -104,7 +112,7 @@ if args.encryption == 0:
     node_id = None
     pub_key_id = None
 elif args.encryption == 1:
-    for i in xrange(len(key_id)):
+    for i in range(len(key_id)):
         dps.set_content_key(key_store, key_id[i], key_data[i])
     node_id = None
     pub_key_id = key_id[0]
@@ -114,28 +122,66 @@ elif args.encryption == 2:
     dps.set_certificate(key_store, subscriber_cert)
     node_id = publisher_id
     pub_key_id = subscriber_id
+elif args.encryption == 3:
+    dps.set_trusted_ca(key_store, ca)
+    dps.set_certificate(key_store, publisher_cert, publisher_private_key, publisher_password)
+    dps.set_certificate(key_store, subscriber_cert)
+    node_id = publisher_id
+    pub_key_id = None
+
+event = threading.Event()
 
 def on_ack(pub, payload):
-    print "Ack for pub UUID %s(%d)" % (dps.publication_get_uuid(pub), dps.publication_get_sequence_num(pub))
-    print "    %s" % (payload)
+    print("Ack for pub UUID %s(%d) [%s]" % (dps.publication_get_uuid(pub), dps.publication_get_sequence_num(pub), dps.ack_get_sender_key_id(pub)))
+    print("    %s" % (payload.tobytes()))
+
+def on_link(node, addr, status):
+    if status == dps.OK:
+        print("Publisher is linked to %s" % (addr))
+    else:
+        print("link %s returned %s" % (addr, dps.err_txt(status)))
+    event.set()
 
 def on_destroy(node):
-    print "Destroyed"
+    print("Destroyed")
     dps.destroy_key_store(key_store)
 
-node = dps.create_node("/", key_store, node_id)
-dps.start_node(node, dps.MCAST_PUB_ENABLE_SEND, 0)
-print "Publisher is listening on port %d" % (dps.get_port_number(node))
-pub = dps.create_publication(node)
+if args.port != None:
+    mcast = dps.MCAST_PUB_DISABLED
 
+node = dps.create_node("/", key_store, node_id)
+listen_addr = None
+if args.listen != None:
+    listen_addr = dps.create_address()
+    try:
+        dps.set_address(listen_addr, "[::]:%d" % (int(args.listen)))
+    except ValueError:
+        dps.set_address(listen_addr, args.listen)
+dps.start_node(node, mcast, listen_addr)
+print("Publisher is listening on %s" % (dps.get_listen_address(node)))
+
+if args.port != None:
+    try:
+        addr_text = "[::1]:%d" % (int(args.port))
+    except ValueError:
+        addr_text = args.port
+    event.clear()
+    ret = dps.link(node, addr_text, on_link)
+    if ret == dps.OK:
+        event.wait()
+    else:
+        print("link %s returned %s" % (addr_text, dps.err_txt(ret)))
+
+pub = dps.create_publication(node)
 dps.init_publication(pub, ['a/b/c'], False, None, on_ack)
 dps.publication_add_sub_id(pub, pub_key_id)
 dps.publish(pub, "hello")
-print "Pub UUID %s(%d)" % (dps.publication_get_uuid(pub), dps.publication_get_sequence_num(pub))
+print("Pub UUID %s(%d)" % (dps.publication_get_uuid(pub), dps.publication_get_sequence_num(pub)))
 time.sleep(0.1)
 dps.publish(pub, "world")
-print "Pub UUID %s(%d)" % (dps.publication_get_uuid(pub), dps.publication_get_sequence_num(pub))
+print("Pub UUID %s(%d)" % (dps.publication_get_uuid(pub), dps.publication_get_sequence_num(pub)))
 time.sleep(0.1)
 
 dps.destroy_publication(pub)
 dps.destroy_node(node, on_destroy)
+dps.destroy_address(listen_addr)

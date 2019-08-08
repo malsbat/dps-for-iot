@@ -20,12 +20,12 @@
  *-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
  */
 
-#include <string.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <ctype.h>
 #include <assert.h>
+#include <ctype.h>
 #include <safe_lib.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <dps/dbg.h>
 #include <dps/dps.h>
 #include "node.h"
@@ -140,7 +140,8 @@ ErrorExit:
 void DPS_LinkMonitorStop(RemoteNode* remote)
 {
     if (remote->monitor) {
-        DPS_DBGPRINT("Node %d no longer monitoring %s\n", remote->monitor->node->port, DESCRIBE(remote));
+        DPS_DBGPRINT("Node %s no longer monitoring %s\n", remote->monitor->node->addrStr,
+                     DESCRIBE(remote));
         DestroyLinkMonitor(remote->monitor);
     }
 }
@@ -149,6 +150,7 @@ static void OnProbeTimeout(uv_timer_t* handle)
 {
     DPS_Status ret = DPS_ERR_TIMEOUT;
     LinkMonitor* monitor = (LinkMonitor*)handle->data;
+    DPS_PublishRequest* req = NULL;
 
     DPS_DBGTRACE();
 
@@ -182,27 +184,39 @@ static void OnProbeTimeout(uv_timer_t* handle)
      * Send a next probe
      */
     if (ret == DPS_OK) {
+        req = DPS_CreatePublishRequest(monitor->pub, 0, NULL, NULL);
+        if (!req) {
+            ret = DPS_ERR_RESOURCES;
+        }
+    }
+    if (ret == DPS_OK) {
         /*
          * Publications are not normally sent to muted noded so we have
          * to call the lower layer APIs for force the probe publication
          * to be sent.
          */
-        ++monitor->pub->sequenceNum;
-        ret = DPS_SerializePub(monitor->node, monitor->pub, NULL, 0, 0);
-        if (ret == DPS_OK) {
-            DPS_DBGPRINT("Send link probe from %d to %s\n", monitor->node->port, DESCRIBE(monitor->remote));
-            ret = DPS_SendPublication(monitor->node, monitor->pub, monitor->remote, DPS_FALSE);
-            /*
-             * We have to delete the publication history for the probe otherwise
-             * it will look like a duplicate and will be discarded.
-             */
-            DPS_DeletePubHistory(&monitor->node->history, &monitor->pub->shared->pubId);
-        }
+        req->sequenceNum = ++monitor->pub->sequenceNum;
+        ret = DPS_SerializePub(req, NULL, 0, 0);
     }
-
+    if (ret == DPS_OK) {
+        DPS_DBGPRINT("Send link probe from %s to %s\n", monitor->node->addrStr,
+                     DESCRIBE(monitor->remote));
+        ret = DPS_SendPublication(req, monitor->pub, monitor->remote);
+        /*
+         * We have to delete the publication history for the probe otherwise
+         * it will look like a duplicate and will be discarded.
+         */
+        DPS_DeletePubHistory(&monitor->node->history, &monitor->pub->pubId);
+    }
     if (ret != DPS_OK) {
         DPS_DBGPRINT("Link probe failed on retry %d\n", monitor->retries);
         DPS_UnmuteRemoteNode(monitor->node, monitor->remote);
+    }
+
+    if (ret == DPS_OK) {
+        DPS_PublishCompletion(req);
+    } else {
+        DPS_DestroyPublishRequest(req);
     }
 
     DPS_UnlockNode(monitor->node);
@@ -226,7 +240,7 @@ DPS_Status DPS_LinkMonitorStart(DPS_Node* node, RemoteNode* remote)
     }
     assert(!remote->monitor);
 
-    DPS_DBGPRINT("Node %d is monitoring %s\n", node->port, DESCRIBE(remote));
+    DPS_DBGPRINT("Node %s is monitoring %s\n", node->addrStr, DESCRIBE(remote));
 
     monitor = calloc(1, sizeof(LinkMonitor));
     if (!monitor) {

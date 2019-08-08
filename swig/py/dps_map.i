@@ -46,12 +46,16 @@
 
 
 %{
+#include <dps/private/dps.h>
+
 typedef PyObject* Handle;
 
 class Handler {
 public:
-    Handler(PyObject* obj) : m_obj(obj) { Py_INCREF(m_obj); }
+    Handler() : m_obj(nullptr) { }
+    Handler(PyObject* obj) { Set(obj); }
     ~Handler() { Py_XDECREF(m_obj); }
+    void Set(PyObject* obj) { m_obj = obj; Py_XINCREF(m_obj); }
     PyObject* m_obj;
 };
 %}
@@ -87,14 +91,18 @@ public:
         /*
          * Address
          */
-        res = SWIG_AsCharPtrAndSize(tuple[0], &addr, NULL, &alloc);
-        if (!SWIG_IsOK(res)) {
-            SWIG_exception_fail(SWIG_ArgError(res), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+        if (tuple[0] != Py_None) {
+            res = SWIG_AsCharPtrAndSize(tuple[0], &addr, NULL, &alloc);
+            if (!SWIG_IsOK(res)) {
+                SWIG_exception_fail(SWIG_ArgError(res), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+            }
+            if (uv_inet_pton(AF_INET, addr, &in->sin_addr) != 0) {
+                SWIG_exception_fail(SWIG_ArgError(SWIG_ValueError), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+            }
+            if (alloc == SWIG_NEWOBJ) delete[] addr;
+        } else {
+            in->sin_addr.s_addr = INADDR_ANY;
         }
-        if (uv_inet_pton(AF_INET, addr, &in->sin_addr) != 0) {
-            SWIG_exception_fail(SWIG_ArgError(SWIG_ValueError), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
-        }
-        if (alloc == SWIG_NEWOBJ) delete[] addr;
         /*
          * Port
          */
@@ -129,14 +137,18 @@ public:
         /*
          * Address
          */
-        res = SWIG_AsCharPtrAndSize(tuple[0], &addr, NULL, &alloc);
-        if (!SWIG_IsOK(res)) {
-            SWIG_exception_fail(SWIG_ArgError(res), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+        if (tuple[0] != Py_None) {
+            res = SWIG_AsCharPtrAndSize(tuple[0], &addr, NULL, &alloc);
+            if (!SWIG_IsOK(res)) {
+                SWIG_exception_fail(SWIG_ArgError(res), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+            }
+            if (uv_inet_pton(AF_INET6, addr, &in->sin6_addr) != 0) {
+                SWIG_exception_fail(SWIG_ArgError(SWIG_ValueError), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+            }
+            if (alloc == SWIG_NEWOBJ) delete[] addr;
+        } else {
+            memcpy(&in->sin6_addr, &in6addr_any, sizeof(in->sin6_addr));
         }
-        if (uv_inet_pton(AF_INET6, addr, &in->sin6_addr) != 0) {
-            SWIG_exception_fail(SWIG_ArgError(SWIG_ValueError), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
-        }
-        if (alloc == SWIG_NEWOBJ) delete[] addr;
         /*
          * Port
          */
@@ -205,8 +217,72 @@ public:
     }
 }
 
+%typemap(in) (Buffer* bufs, size_t numBufs) {
+    /*
+     * We will need to copy immutable (String or Bytes) objects as
+     * encryption is done in-place to avoid excessive allocation.
+     *
+     * TODO Using arg1 directly here is not ideal, but I don't know of
+     * any other way in SWIG to get to the publication argument.
+     */
+    int safe = DPS_PublicationIsEncrypted(arg1);
+    Py_ssize_t sz;
+    Py_ssize_t i;
+    if (PyList_Check($input)) {
+        sz = PyList_GET_SIZE($input);
+        if (sz) {
+            $1 = new Buffer[sz];
+            $2 = sz;
+            for (i = 0; i < sz; ++i) {
+                int res = safe ? $1[i].SetSafe(PyList_GET_ITEM($input, i)) :
+                    $1[i].Set(PyList_GET_ITEM($input, i));
+                if (!SWIG_IsOK(res)) {
+                    SWIG_exception_fail(SWIG_ArgError(res), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+                }
+            }
+        }
+    } else {
+        $1 = new Buffer[1];
+        $2 = 1;
+        int res = safe ? $1[0].SetSafe($input) : $1[0].Set($input);
+        if (!SWIG_IsOK(res)) {
+            SWIG_exception_fail(SWIG_ArgError(res), "in method '" "$symname" "', argument " "$argnum"" of type '" "$1_type""'");
+        }
+    }
+}
+
 %extend _DPS_UUID {
     const char* __str__() {
         return UUIDToString($self);
     }
 }
+
+%{
+static void OnNodeDestroyedSyn(DPS_Node* node, void* data)
+{
+    DPS_SignalEvent((DPS_Event*)data, DPS_OK);
+}
+
+DPS_Status DestroyNode(DPS_Node* node)
+{
+    DPS_Event* event = NULL;
+    DPS_Status ret;
+
+    event = DPS_CreateEvent();
+    if (!event) {
+        ret = DPS_ERR_RESOURCES;
+        goto Exit;
+    }
+    ret = DPS_DestroyNode(node, OnNodeDestroyedSyn, event);
+    if (ret != DPS_OK) {
+        goto Exit;
+    }
+    Py_BEGIN_ALLOW_THREADS
+    ret = DPS_WaitForEvent(event);
+    Py_END_ALLOW_THREADS
+Exit:
+    DPS_DestroyEvent(event);
+    return ret;
+}
+%}
+DPS_Status DestroyNode(DPS_Node* node);

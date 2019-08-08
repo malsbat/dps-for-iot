@@ -1,81 +1,87 @@
 import os
-Import(['extEnv'])
-
-platform = extEnv['PLATFORM']
+Import(['env'])
 
 # Pull down mbedtls from github and build the library
 
-env = extEnv.Clone()
+mtenv = env.Clone()
 
-git = env.Command('./mbedtls/.git', None,
-                   ['git clone -n https://github.com/ARMmbed/mbedtls ext/mbedtls'])
+# mbedtls uses gmtime_s, so we need the secure lib here
+try:
+    mtenv['CPPDEFINES'].remove('__STDC_WANT_SECURE_LIB__=0')
+except ValueError:
+    pass
 
-dep = env.Command('./mbedtls/Makefile', git,
-                   ['git checkout tags/mbedtls-2.8.0'],
-                     chdir = 'ext/mbedtls')
+git = mtenv.Command('./mbedtls/.git', None,
+                    ['git clone -q -n https://github.com/ARMmbed/mbedtls ext/mbedtls'])
 
-env.Append(
-    CPPPATH = [
-        '.',
-        './mbedtls/include/',
-    ],
-    CPPDEFINES = [
-        'MBEDTLS_USER_CONFIG_FILE=\\"mbedtls_config.h\\"',
-    ]
-)
+dep = mtenv.Command('./mbedtls/Makefile', git,
+                    ['git fetch -q', 'git checkout -q tags/mbedtls-2.16.0'],
+                    chdir = 'ext/mbedtls')
 
-if env['PLATFORM'] == 'posix':
-   env.Append(CFLAGS = ['-fPIC', "-g"])
+mtenv.Append(CPPPATH = ['.', './mbedtls/include/',])
+mtenv.Append(CPPDEFINES = ['MBEDTLS_USER_CONFIG_FILE=\\"mbedtls_config.h\\"',])
+# optimized sha512 requires nasm and x86_64
+if env['TARGET_ARCH'] != 'x86' and env.Detect('nasm') != None:
+    mtenv.Append(CPPDEFINES = ['DPS_USE_NASM'])
 
 sources = [
-     './mbedtls/library/aes.c',
-     './mbedtls/library/aesni.c',
-     './mbedtls/library/asn1write.c',
-     './mbedtls/library/asn1parse.c',
-     './mbedtls/library/base64.c',
-     './mbedtls/library/bignum.c',
-     './mbedtls/library/cipher.c',
-     './mbedtls/library/cipher_wrap.c',
-     './mbedtls/library/ctr_drbg.c',
-     './mbedtls/library/debug.c',
-     './mbedtls/library/ecdh.c',
-     './mbedtls/library/ecdsa.c',
-     './mbedtls/library/ecp.c',
-     './mbedtls/library/ecp_curves.c',
-     './mbedtls/library/entropy.c',
-     './mbedtls/library/entropy_poll.c',
-     './mbedtls/library/error.c',
-     './mbedtls/library/gcm.c',
-     './mbedtls/library/hmac_drbg.c',
-     './mbedtls/library/md.c',
-     './mbedtls/library/md_wrap.c',
-     './mbedtls/library/md5.c',
-     './mbedtls/library/oid.c',
-     './mbedtls/library/pem.c',
-     './mbedtls/library/pk.c',
-     './mbedtls/library/pk_wrap.c',
-     './mbedtls/library/pkparse.c',
-     './mbedtls/library/platform.c',
-     './mbedtls/library/sha256.c',
-     './mbedtls/library/sha512.c',
-     './mbedtls/library/timing.c',
-     './mbedtls/library/x509.c',
-     './mbedtls/library/x509_crt.c',
+    './mbedtls/library/aes.c',
+    './mbedtls/library/aesni.c',
+    './mbedtls/library/asn1write.c',
+    './mbedtls/library/asn1parse.c',
+    './mbedtls/library/base64.c',
+    './mbedtls/library/bignum.c',
+    './mbedtls/library/cipher.c',
+    './mbedtls/library/cipher_wrap.c',
+    './mbedtls/library/ctr_drbg.c',
+    './mbedtls/library/debug.c',
+    './mbedtls/library/ecdh.c',
+    './mbedtls/library/ecdsa.c',
+    './mbedtls/library/ecp.c',
+    './mbedtls/library/ecp_curves.c',
+    './mbedtls/library/entropy.c',
+    './mbedtls/library/entropy_poll.c',
+    './mbedtls/library/error.c',
+    './mbedtls/library/gcm.c',
+    './mbedtls/library/hkdf.c',
+    './mbedtls/library/hmac_drbg.c',
+    './mbedtls/library/md.c',
+    './mbedtls/library/md_wrap.c',
+    './mbedtls/library/md5.c',
+    './mbedtls/library/nist_kw.c',
+    './mbedtls/library/oid.c',
+    './mbedtls/library/padlock.c',
+    './mbedtls/library/pem.c',
+    './mbedtls/library/pk.c',
+    './mbedtls/library/pk_wrap.c',
+    './mbedtls/library/pkparse.c',
+    './mbedtls/library/platform.c',
+    './mbedtls/library/platform_util.c',
+    './mbedtls/library/sha256.c',
+    './mbedtls/library/sha512.c',
+    './mbedtls/library/timing.c',
+    './mbedtls/library/x509.c',
+    './mbedtls/library/x509_crt.c'
 ]
 
 sources += [
-     './mbedtls/library/ssl_cache.c',
-     './mbedtls/library/ssl_ciphersuites.c',
-     './mbedtls/library/ssl_cli.c',
-     './mbedtls/library/ssl_cookie.c',
-     './mbedtls/library/ssl_srv.c',
-     './mbedtls/library/ssl_tls.c',
+    './mbedtls/library/ssl_cache.c',
+    './mbedtls/library/ssl_ciphersuites.c',
+    './mbedtls/library/ssl_cli.c',
+    './mbedtls/library/ssl_cookie.c',
+    './mbedtls/library/ssl_srv.c',
+    './mbedtls/library/ssl_tls.c',
 ]
 
-objects = env.Object(sources)
+sources += [
+    './mbedtls_sha512_process_alt.c'
+]
+
+objs = mtenv.Object(sources)
+shobjs = mtenv.SharedObject(sources)
 
 Depends(sources, dep)
-Depends(objects, './mbedtls_config.h')
+Depends(objs, './mbedtls_config.h')
+Depends(shobjs, './mbedtls_config.h')
 
-libs = [env.Library('lib/libmbedtls', objects)]
-Return('libs')
+Return('objs shobjs')

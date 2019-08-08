@@ -1,16 +1,11 @@
 package dps
 
 import (
-	"net"
-	"strconv"
 	"sync"
 	"unsafe"
 )
 
 /*
- #cgo CFLAGS: -I${SRCDIR}/../../../build/dist/inc
- #cgo LDFLAGS: -L${SRCDIR}/../../../build/dist/lib -ldps_shared -luv
-
  #include <stdlib.h>
  #include <string.h>
  #include <uv.h>
@@ -18,24 +13,6 @@ import (
  #include <dps/dps.h>
  #include <dps/json.h>
  #include <dps/synchronous.h>
-
- static DPS_NodeAddress* setAddress(DPS_NodeAddress* addr, const char* host, uint16_t port) {
-         DPS_NodeAddress* ret;
-         struct sockaddr_storage ss;
-         struct sockaddr_in* sin = (struct sockaddr_in*)&ss;
-         if (uv_inet_pton(AF_INET, host, &sin->sin_addr) == 0) {
-                 sin->sin_family = AF_INET;
-                 sin->sin_port = htons(port);
-                 return DPS_SetAddress(addr, (struct sockaddr*)sin);
-         }
-         struct sockaddr_in6* sin6 = (struct sockaddr_in6*)&ss;
-         if (uv_inet_pton(AF_INET6, host, &sin6->sin6_addr) == 0) {
-                 sin6->sin6_family = AF_INET6;
-                 sin6->sin6_port = htons(port);
-                 return DPS_SetAddress(addr, (struct sockaddr*)sin6);
-         }
-         return NULL;
- }
 
  extern DPS_Status goKeyAndIdHandler(DPS_KeyStoreRequest* request);
  static DPS_Status keyAndIdHandler(DPS_KeyStoreRequest* request) {
@@ -139,22 +116,23 @@ import (
          goOnLinkComplete(node, addr, status, (uintptr_t)data);
  }
 
- static DPS_Status link(DPS_Node* node, DPS_NodeAddress* addr, uintptr_t data) {
-         return DPS_Link(node, addr, onLinkComplete, (void*)data);
+ static DPS_Status link(DPS_Node* node, const char* addrText, uintptr_t data) {
+         return DPS_Link(node, addrText, onLinkComplete, (void*)data);
  }
 
  extern void goOnUnlinkComplete(DPS_Node* node, DPS_NodeAddress* addr, uintptr_t data);
- static void onUnlinkComplete(DPS_Node* node, DPS_NodeAddress* addr, void* data) {
-         goOnUnlinkComplete(node, addr, (uintptr_t)data);
+ static void onUnlinkComplete(DPS_Node* node, const DPS_NodeAddress* addr, void* data) {
+         goOnUnlinkComplete(node, (DPS_NodeAddress*)addr, (uintptr_t)data);
  }
 
- static DPS_Status unlink(DPS_Node* node, DPS_NodeAddress* addr, uintptr_t data) {
+ // mangle the name to avoid conflicts with mingw
+ static DPS_Status unlink_(DPS_Node* node, const DPS_NodeAddress* addr, uintptr_t data) {
          return DPS_Unlink(node, addr, onUnlinkComplete, (void*)data);
  }
 
  extern void goOnResolveAddressComplete(DPS_Node* node, DPS_NodeAddress* addr, uintptr_t data);
- static void onResolveAddressComplete(DPS_Node* node, DPS_NodeAddress* addr, void* data) {
-         goOnResolveAddressComplete(node, addr, (uintptr_t)data);
+ static void onResolveAddressComplete(DPS_Node* node, const DPS_NodeAddress* addr, void* data) {
+         goOnResolveAddressComplete(node, (DPS_NodeAddress*)addr, (uintptr_t)data);
  }
 
  static DPS_Status resolveAddress(DPS_Node* node, char* host, char* service, uintptr_t data) {
@@ -194,6 +172,31 @@ import (
  static DPS_Status subscribe(DPS_Subscription* sub) {
          return DPS_Subscribe(sub, publicationHandler);
  }
+
+ static DPS_Buffer* makeBuffers(size_t n) {
+         return calloc(sizeof(DPS_Buffer), n);
+ }
+
+ extern void goPublishBufsComplete(DPS_Publication* pub, uintptr_t data);
+ static void publishBufsComplete(DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs, DPS_Status status, void* data)
+ {
+         goPublishBufsComplete(pub, (uintptr_t)data);
+ }
+
+ static DPS_Status publishBufs(DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs, int16_t ttl, uintptr_t data) {
+         return DPS_PublishBufs(pub, bufs, numBufs, ttl, publishBufsComplete, (void*)data);
+ }
+
+ extern void goAckPublicationBufsComplete(DPS_Publication* pub, uintptr_t data);
+ static void ackPublicationBufsComplete(DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs, DPS_Status status, void* data)
+ {
+         goAckPublicationBufsComplete(pub, (uintptr_t)data);
+ }
+
+ static DPS_Status ackPublicationBufs(DPS_Publication* pub, const DPS_Buffer* bufs, size_t numBufs, uintptr_t data) {
+         return DPS_AckPublicationBufs(pub, bufs, numBufs, ackPublicationBufsComplete, (void*)data);
+ }
+
 */
 import "C"
 
@@ -250,17 +253,9 @@ func CreateAddress() *NodeAddress {
 }
 func SetAddress(addr *NodeAddress, hostport string) *NodeAddress {
 	caddr := (*C.DPS_NodeAddress)(addr)
-	host, port, err := net.SplitHostPort(hostport)
-	if err != nil {
-		return nil
-	}
-	cport, err := strconv.Atoi(port)
-	if err != nil {
-		return nil
-	}
-	chost := C.CString(host)
-	defer C.free(unsafe.Pointer(chost))
-	return (*NodeAddress)(C.setAddress(caddr, chost, C.uint16_t(cport)))
+	chostport := C.CString(hostport)
+	defer C.free(unsafe.Pointer(chostport))
+	return (*NodeAddress)(C.DPS_SetAddress(caddr, chostport))
 }
 func CopyAddress(dest *NodeAddress, src *NodeAddress) {
 	cdest := (*C.DPS_NodeAddress)(dest)
@@ -333,6 +328,10 @@ type userKeyStore struct {
 }
 
 func (ks userKeyStore) chandle() *C.DPS_KeyStore { return ks.ckeyStore }
+
+func makeKeyId(keyId KeyId) *C.DPS_KeyId {
+	return C.makeKeyId((*C.uint8_t)(&keyId[0]), C.size_t(len(keyId)))
+}
 
 func makeKey(key Key) *C.DPS_Key {
 	// no defer below, freeKey will take care of the memory
@@ -438,10 +437,12 @@ func goKeyAndIdHandler(crequest *C.DPS_KeyStoreRequest) C.DPS_Status {
 	request := (*KeyStoreRequest)(crequest)
 	ckeyStore := (*C.DPS_KeyStore)(C.DPS_KeyStoreHandle(crequest))
 	ks, ok := reg.lookup(uintptr(C.DPS_GetKeyStoreData(ckeyStore))).(*userKeyStore)
-	if ok {
-		return C.DPS_Status(ks.keyAndIdHandler(request))
-	} else {
+	if !ok {
 		return ERR_FAILURE
+	} else if ks.keyAndIdHandler == nil {
+		return ERR_NOT_IMPLEMENTED
+	} else {
+		return C.DPS_Status(ks.keyAndIdHandler(request))
 	}
 }
 
@@ -450,14 +451,16 @@ func goKeyHandler(crequest *C.DPS_KeyStoreRequest, ckeyId *C.DPS_KeyId) C.DPS_St
 	request := (*KeyStoreRequest)(crequest)
 	ckeyStore := (*C.DPS_KeyStore)(C.DPS_KeyStoreHandle(crequest))
 	var keyId KeyId
-	if ckeyId != nil {
+	if ckeyId != nil && ckeyId.id != nil {
 		keyId = (*[1 << 30]byte)(unsafe.Pointer(ckeyId.id))[:ckeyId.len:ckeyId.len]
 	}
 	ks, ok := reg.lookup(uintptr(C.DPS_GetKeyStoreData(ckeyStore))).(*userKeyStore)
-	if ok {
-		return C.DPS_Status(ks.keyHandler(request, keyId))
-	} else {
+	if !ok {
 		return ERR_FAILURE
+	} else if ks.keyHandler == nil {
+		return ERR_NOT_IMPLEMENTED
+	} else {
+		return C.DPS_Status(ks.keyHandler(request, keyId))
 	}
 }
 
@@ -500,10 +503,12 @@ func goEphemeralKeyHandler(crequest *C.DPS_KeyStoreRequest, ckey *C.DPS_Key) C.D
 		key = KeyCert{C.GoString(cert.cert), privateKey, password}
 	}
 	ks, ok := reg.lookup(uintptr(C.DPS_GetKeyStoreData(ckeyStore))).(*userKeyStore)
-	if ok {
-		return C.DPS_Status(ks.ephemeralKeyHandler(request, key))
-	} else {
+	if !ok {
 		return ERR_FAILURE
+	} else if ks.ephemeralKeyHandler == nil {
+		return ERR_NOT_IMPLEMENTED
+	} else {
+		return C.DPS_Status(ks.ephemeralKeyHandler(request, key))
 	}
 }
 
@@ -512,10 +517,12 @@ func goCAHandler(crequest *C.DPS_KeyStoreRequest) C.DPS_Status {
 	request := (*KeyStoreRequest)(crequest)
 	ckeyStore := (*C.DPS_KeyStore)(C.DPS_KeyStoreHandle(crequest))
 	ks, ok := reg.lookup(uintptr(C.DPS_GetKeyStoreData(ckeyStore))).(*userKeyStore)
-	if ok {
-		return C.DPS_Status(ks.caHandler(request))
-	} else {
+	if !ok {
 		return ERR_FAILURE
+	} else if ks.caHandler == nil {
+		return ERR_NOT_IMPLEMENTED
+	} else {
+		return C.DPS_Status(ks.caHandler(request))
 	}
 }
 
@@ -541,7 +548,10 @@ func SetContentKey(keyStore KeyStore, keyId KeyId, key Key) int {
 	if !ok {
 		return ERR_ARGS
 	}
-	ckeyId := C.makeKeyId((*C.uint8_t)(&keyId[0]), C.size_t(len(keyId)))
+	ckeyId := makeKeyId(keyId)
+	if ckeyId == nil {
+		return ERR_RESOURCES
+	}
 	defer C.free(unsafe.Pointer(ckeyId))
 	ckey := makeKey(key)
 	defer C.freeKey(ckey)
@@ -552,7 +562,10 @@ func SetNetworkKey(keyStore KeyStore, keyId KeyId, key Key) int {
 	if !ok {
 		return ERR_ARGS
 	}
-	ckeyId := C.makeKeyId((*C.uint8_t)(&keyId[0]), C.size_t(len(keyId)))
+	ckeyId := makeKeyId(keyId)
+	if ckeyId == nil {
+		return ERR_RESOURCES
+	}
 	defer C.free(unsafe.Pointer(ckeyId))
 	ckey := makeKey(key)
 	defer C.freeKey(ckey)
@@ -595,18 +608,25 @@ type Node C.DPS_Node
 func CreateNode(separators string, keyStore KeyStore, keyId KeyId) *Node {
 	cseparators := C.CString(separators)
 	defer C.free(unsafe.Pointer(cseparators))
-	ckeyStore := keyStore.chandle()
+	var ckeyStore *C.DPS_KeyStore
+	if keyStore != nil {
+		ckeyStore = keyStore.chandle()
+	}
 	var ckeyId *C.DPS_KeyId
 	if len(keyId) > 0 {
-		ckeyId = C.makeKeyId((*C.uint8_t)(&keyId[0]), C.size_t(len(keyId)))
+		ckeyId = makeKeyId(keyId)
+		if ckeyId == nil {
+			return nil
+		}
 		defer C.free(unsafe.Pointer(ckeyId))
 	}
 	return (*Node)(C.DPS_CreateNode(cseparators, ckeyStore, ckeyId))
 }
 
-func StartNode(node *Node, mcastPub int, listenPort uint16) int {
+func StartNode(node *Node, mcastPub int, listenAddr *NodeAddress) int {
 	cnode := (*C.DPS_Node)(node)
-	return int(C.DPS_StartNode(cnode, C.int(mcastPub), C.uint16_t(listenPort)))
+	clistenAddr := (*C.DPS_NodeAddress)(listenAddr)
+	return int(C.DPS_StartNode(cnode, C.int(mcastPub), clistenAddr))
 }
 
 type OnNodeDestroyed func(*Node)
@@ -631,18 +651,24 @@ func SetNodeSubscriptionUpdateDelay(node *Node, subsRateMsecs uint32) {
 	C.DPS_SetNodeSubscriptionUpdateDelay(cnode, C.uint32_t(subsRateMsecs))
 }
 
-func GetPortNumber(node *Node) uint16 {
+func GetListenAddress(node *Node) *NodeAddress {
 	cnode := (*C.DPS_Node)(node)
-	return uint16(C.DPS_GetPortNumber(cnode))
+	return (*NodeAddress)(C.DPS_GetListenAddress(cnode))
+}
+
+func GetListenAddressString(node *Node) string {
+	cnode := (*C.DPS_Node)(node)
+	return C.GoString(C.DPS_GetListenAddressString(cnode))
 }
 
 type OnLinkComplete func(node *Node, addr *NodeAddress, status int)
 
-func Link(node *Node, addr *NodeAddress, cb OnLinkComplete) int {
+func Link(node *Node, addrText string, cb OnLinkComplete) int {
 	cnode := (*C.DPS_Node)(node)
-	caddr := (*C.DPS_NodeAddress)(addr)
+	caddrText := C.CString(addrText)
+	defer C.free(unsafe.Pointer(caddrText))
 	handle := reg.register(cb)
-	return int(C.link(cnode, caddr, C.uintptr_t(handle)))
+	return int(C.link(cnode, caddrText, C.uintptr_t(handle)))
 }
 
 //export goOnLinkComplete
@@ -662,7 +688,7 @@ func Unlink(node *Node, addr *NodeAddress, cb OnUnlinkComplete) int {
 	cnode := (*C.DPS_Node)(node)
 	caddr := (*C.DPS_NodeAddress)(addr)
 	handle := reg.register(cb)
-	return int(C.unlink(cnode, caddr, C.uintptr_t(handle)))
+	return int(C.unlink_(cnode, caddr, C.uintptr_t(handle)))
 }
 
 //export goOnUnlinkComplete
@@ -713,6 +739,10 @@ func PublicationGetSequenceNum(pub *Publication) uint32 {
 	return uint32(C.DPS_PublicationGetSequenceNum(pub.cpub))
 }
 
+func PublicationGetTTL(pub *Publication) int16 {
+	return int16(C.DPS_PublicationGetTTL(pub.cpub))
+}
+
 func PublicationGetTopics(pub *Publication) (topics []string) {
 	numTopics := int(C.DPS_PublicationGetNumTopics(pub.cpub))
 	topics = make([]string, numTopics)
@@ -730,9 +760,12 @@ func PublicationIsAckRequested(pub *Publication) bool {
 	}
 }
 
-func PublicationGetSenderKeyId(pub *Publication) KeyId {
+func PublicationGetSenderKeyId(pub *Publication) (keyId KeyId) {
 	ckeyId := C.DPS_PublicationGetSenderKeyId(pub.cpub)
-	return C.GoBytes(unsafe.Pointer(ckeyId.id), C.int(ckeyId.len))
+	if ckeyId != nil && ckeyId.id != nil {
+		keyId = C.GoBytes(unsafe.Pointer(ckeyId.id), C.int(ckeyId.len))
+	}
+	return
 }
 
 func PublicationGetNode(pub *Publication) *Node {
@@ -779,7 +812,10 @@ func InitPublication(pub *Publication, topics []string, noWildCard bool, keyId K
 
 //export goAcknowledgementHandler
 func goAcknowledgementHandler(cpub *C.DPS_Publication, cpayload *C.uint8_t, clen C.size_t) {
-	payload := (*[1 << 30]byte)(unsafe.Pointer(cpayload))[:clen:clen]
+	var payload []byte
+	if cpayload != nil {
+		payload = (*[1 << 30]byte)(unsafe.Pointer(cpayload))[:clen:clen]
+	}
 	pub, ok := reg.lookup(uintptr(C.DPS_GetPublicationData(cpub))).(*Publication)
 	if ok {
 		pub.handler(pub, payload)
@@ -789,7 +825,10 @@ func goAcknowledgementHandler(cpub *C.DPS_Publication, cpayload *C.uint8_t, clen
 func PublicationAddSubId(pub *Publication, keyId KeyId) int {
 	var ckeyId *C.DPS_KeyId
 	if keyId != nil {
-		ckeyId = C.makeKeyId((*C.uint8_t)(&keyId[0]), C.size_t(len(keyId)))
+		ckeyId = makeKeyId(keyId)
+		if ckeyId == nil {
+			return ERR_RESOURCES
+		}
 		defer C.free(unsafe.Pointer(ckeyId))
 	}
 	return int(C.DPS_PublicationAddSubId(pub.cpub, ckeyId))
@@ -798,10 +837,12 @@ func PublicationAddSubId(pub *Publication, keyId KeyId) int {
 func PublicationRemoveSubId(pub *Publication, keyId KeyId) {
 	var ckeyId *C.DPS_KeyId
 	if keyId != nil {
-		ckeyId = C.makeKeyId((*C.uint8_t)(&keyId[0]), C.size_t(len(keyId)))
-		defer C.free(unsafe.Pointer(ckeyId))
+		ckeyId = makeKeyId(keyId)
 	}
-	C.DPS_PublicationRemoveSubId(pub.cpub, ckeyId)
+	if ckeyId != nil {
+		defer C.free(unsafe.Pointer(ckeyId))
+		C.DPS_PublicationRemoveSubId(pub.cpub, ckeyId)
+	}
 }
 
 func Publish(pub *Publication, payload []byte, ttl int16) int {
@@ -813,6 +854,24 @@ func Publish(pub *Publication, payload []byte, ttl int16) int {
 	}
 	cttl := C.int16_t(ttl)
 	return int(C.DPS_Publish(pub.cpub, cpayload, clen, cttl))
+}
+
+//export goPublishBufsComplete
+func goPublishBufsComplete(cpub *C.DPS_Publication, handle uintptr) {
+	reg.unregister(handle)
+}
+func PublishBufs(pub *Publication, bufs [][]byte, ttl int16) int {
+	handle := reg.register(bufs)
+	cbufs := C.makeBuffers(C.size_t(len(bufs)))
+	defer C.free(unsafe.Pointer(cbufs))
+	cbuf := (*[1<<30]C.DPS_Buffer)(unsafe.Pointer(cbufs))
+	for i := 0; i < len(bufs); i++ {
+		cbuf[i].base = (*C.uint8_t)(&bufs[i][0])
+		cbuf[i].len = C.size_t(len(bufs[i]))
+	}
+	cnumBufs := C.size_t(len(bufs))
+	cttl := C.int16_t(ttl)
+	return int(C.publishBufs(pub.cpub, cbufs, cnumBufs, cttl, C.uintptr_t(handle)))
 }
 
 func DestroyPublication(pub *Publication) (ret int) {
@@ -833,9 +892,33 @@ func AckPublication(pub *Publication, payload []byte) int {
 	return int(C.DPS_AckPublication(pub.cpub, cpayload, clen))
 }
 
-func AckGetSenderKeyId(pub *Publication) KeyId {
+//export goAckPublicationBufsComplete
+func goAckPublicationBufsComplete(cpub *C.DPS_Publication, handle uintptr) {
+	reg.unregister(handle)
+}
+func AckPublicationBufs(pub *Publication, bufs [][]byte) int {
+	handle := reg.register(bufs)
+	cbufs := C.makeBuffers(C.size_t(len(bufs)))
+	defer C.free(unsafe.Pointer(cbufs))
+	cbuf := (*[1<<30]C.DPS_Buffer)(unsafe.Pointer(cbufs))
+	for i := 0; i < len(bufs); i++ {
+		cbuf[i].base = (*C.uint8_t)(&bufs[i][0])
+		cbuf[i].len = C.size_t(len(bufs[i]))
+	}
+	cnumBufs := C.size_t(len(bufs))
+	return int(C.ackPublicationBufs(pub.cpub, cbufs, cnumBufs, C.uintptr_t(handle)))
+}
+
+func AckGetSequenceNum(pub *Publication) uint32 {
+	return uint32(C.DPS_AckGetSequenceNum(pub.cpub))
+}
+
+func AckGetSenderKeyId(pub *Publication) (keyId KeyId) {
 	ckeyId := C.DPS_AckGetSenderKeyId(pub.cpub)
-	return C.GoBytes(unsafe.Pointer(ckeyId.id), C.int(ckeyId.len))
+	if ckeyId != nil && ckeyId.id != nil {
+		keyId = C.GoBytes(unsafe.Pointer(ckeyId.id), C.int(ckeyId.len))
+	}
+	return
 }
 
 type Subscription struct {
@@ -879,10 +962,17 @@ func Subscribe(sub *Subscription, handler PublicationHandler) int {
 	return int(C.subscribe(sub.csub))
 }
 
+func SubscribeExpired(sub *Subscription, enable int) int {
+	return int(C.DPS_SubscribeExpired(sub.csub, C.int(enable)))
+}
+
 //export goPublicationHandler
 func goPublicationHandler(csub *C.DPS_Subscription, cpub *C.DPS_Publication, cpayload *C.uint8_t, clen C.size_t) {
 	pub := Publication{0, cpub, nil}
-	payload := (*[1 << 30]byte)(unsafe.Pointer(cpayload))[:clen:clen]
+	var payload []byte
+	if cpayload != nil {
+		payload = (*[1 << 30]byte)(unsafe.Pointer(cpayload))[:clen:clen]
+	}
 	sub, ok := reg.lookup(uintptr(C.DPS_GetSubscriptionData(csub))).(*Subscription)
 	if ok {
 		sub.handler(sub, &pub, payload)
@@ -963,14 +1053,15 @@ func CBOR2JSON(cbor []byte, pretty bool) (json string, err int) {
 	return
 }
 
-func LinkTo(node *Node, host string, port uint16) (addr *NodeAddress, err int) {
+func LinkTo(node *Node, addrText string, addr *NodeAddress) int {
 	cnode := (*C.DPS_Node)(node)
-	chost := C.CString(host)
-	defer C.free(unsafe.Pointer(chost))
-	addr = new(NodeAddress)
+	var caddrText *C.char
+	if len(addrText) > 0 {
+		caddrText = C.CString(addrText)
+	}
+	defer C.free(unsafe.Pointer(caddrText))
 	caddr := (*C.DPS_NodeAddress)(addr)
-	err = int(C.DPS_LinkTo(cnode, chost, C.uint16_t(port), caddr))
-	return
+	return int(C.DPS_LinkTo(cnode, caddrText, caddr))
 }
 
 func UnlinkFrom(node *Node, addr *NodeAddress) int {
@@ -996,7 +1087,7 @@ func UUIDToString(uuid *UUID) string {
 	return C.GoString(C.DPS_UUIDToString(cuuid))
 }
 
-func DPS_UUIDCompare(a *UUID, b *UUID) int {
+func UUIDCompare(a *UUID, b *UUID) int {
 	ca := (*C.DPS_UUID)(a)
 	cb := (*C.DPS_UUID)(b)
 	return int(C.DPS_UUIDCompare(ca, cb))
